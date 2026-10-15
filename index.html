@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D Music Visualizer</title>
+<meta name="description" content="A music visualizer with real depth on glasses-free 3D displays, built on DisplayXR. Captures the audio your PC is playing from any streaming app.">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #07060d;
+    --panel: #12101c;
+    --line: #2a2640;
+    --text: #ece9f7;
+    --muted: #9c97b5;
+    --accent: #ff5fae;
+    --accent-2: #4fd8ff;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  a { color: var(--accent-2); }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 64px; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: .01em; }
+  h1 span { background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  #status { font-size: 13px; color: var(--muted); }
+  #status[data-kind="ok"]::before { content: "● "; color: var(--ok); }
+  #status[data-kind="warn"]::before { content: "● "; color: var(--warn); }
+
+  /* The woven canvas. It must stay visually bare: no border, radius, shadow, filter, opacity or
+     background on it or any ancestor (woven-canvas rules 7 and 9). will-change from first paint
+     (rule 4). The scene fades its own edges per eye. */
+  .stage-wrap { position: relative; }
+  #stage { display: block; width: 100%; aspect-ratio: 16 / 9; will-change: transform; touch-action: none; }
+  /* Cover until the first woven frame: on top, opaque, removed with a hard cut (rule 5). */
+  #cover { position: absolute; inset: 0; background: var(--bg); display: grid; place-items: center; color: var(--muted); font-size: 14px; }
+
+  .panel { display: grid; gap: 18px; grid-template-columns: 1fr; margin-top: 18px; }
+  @media (min-width: 900px) { .panel { grid-template-columns: 1.1fr 1fr; } }
+  section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+
+  button, select, .filebtn { font: inherit; color: var(--text); background: #1c1930; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+  button:hover, .filebtn:hover { border-color: #4a4470; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: linear-gradient(90deg, #b8327c, #2f86b3); border-color: transparent; font-weight: 600; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .row + .row { margin-top: 10px; }
+  select { max-width: 260px; }
+  .filebtn input { display: none; }
+  .now { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 13px; color: var(--muted); min-height: 22px; }
+  #meter { --l: 0; position: relative; width: 120px; height: 6px; border-radius: 3px; background: #241f38; overflow: hidden; flex: none; }
+  #meter::after { content: ""; position: absolute; inset: 0; transform-origin: left; transform: scaleX(var(--l)); background: linear-gradient(90deg, var(--accent-2), var(--accent)); }
+  #meter.beat { outline: 1px solid var(--accent); }
+
+  #styles { display: grid; gap: 8px; grid-template-columns: 1fr; }
+  @media (min-width: 560px) { #styles { grid-template-columns: 1fr 1fr; } }
+  .chip { display: flex; gap: 10px; align-items: flex-start; text-align: left; padding: 9px 11px; }
+  .chip b { display: block; font-size: 14px; }
+  .chip small { display: block; color: var(--muted); font-size: 12px; line-height: 1.35; }
+  .chip .key { flex: none; width: 20px; height: 20px; border-radius: 5px; background: #2a2544; display: grid; place-items: center; font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .chip[aria-pressed="true"] { border-color: var(--accent); background: #2a1631; }
+  .chip[aria-pressed="true"] .key { background: var(--accent); color: #fff; }
+
+  label.slider { display: grid; grid-template-columns: 92px 1fr; gap: 10px; align-items: center; font-size: 13px; color: var(--muted); }
+  label.slider + label.slider { margin-top: 6px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+
+  details { margin-top: 18px; color: var(--muted); font-size: 14px; }
+  details summary { cursor: pointer; color: var(--text); }
+  details li { margin: 4px 0; }
+  kbd { font: 12px ui-monospace, monospace; background: #221e36; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+  footer { margin-top: 26px; font-size: 13px; color: var(--muted); }
+
+  /* Fill window: the stage takes the whole viewport. A plain tint button, no backdrop-filter
+     (rule 10), marked as an overlay for browsers without draw-order occlusion (rule 8). */
+  #exit-fill { display: none; position: fixed; top: 12px; right: 12px; z-index: 10; background: rgba(0, 0, 0, .55); }
+  body.fill { overflow: hidden; }
+  body.fill .wrap { max-width: none; padding: 0; }
+  body.fill header, body.fill .panel, body.fill details, body.fill footer { display: none; }
+  body.fill #stage { width: 100vw; height: 100vh; aspect-ratio: auto; }
+  body.fill #exit-fill { display: block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span>3D Music Visualizer</span></h1>
+    <div id="status">Starting…</div>
+  </header>
+
+  <div class="stage-wrap">
+    <canvas id="stage" width="1280" height="720" aria-label="Music visualization"></canvas>
+    <div id="cover">Starting the 3D view…</div>
+  </div>
+  <button id="exit-fill" type="button" data-inline3d-overlay>Exit full view (Esc)</button>
+
+  <div class="panel">
+    <section class="card">
+      <h2>Music source</h2>
+      <div class="row">
+        <button id="src-system" class="primary" type="button" title="Capture what this PC is playing: Spotify, Apple Music, YouTube, Tidal, a Bluetooth or AirPlay receiver…">Capture PC audio</button>
+        <button id="src-demo" type="button">Demo loop</button>
+        <label class="filebtn">Open file…<input id="file" type="file" accept="audio/*"></label>
+        <button id="stop" type="button" disabled>Stop</button>
+      </div>
+      <div class="row">
+        <button id="src-input" type="button">Use input</button>
+        <select id="devices" aria-label="Audio input device"><option value="">Default input</option></select>
+      </div>
+      <div class="now"><div id="meter" aria-hidden="true"></div><span id="source-label"></span></div>
+    </section>
+
+    <section class="card">
+      <h2>Style</h2>
+      <div id="styles"></div>
+      <div class="row" style="margin-top:12px">
+        <label class="toggle"><input id="auto" type="checkbox"> Auto-cycle styles on the beat</label>
+        <button id="fill" type="button" aria-pressed="false" style="margin-left:auto">Full view (F)</button>
+      </div>
+      <div style="margin-top:12px">
+        <label class="slider">Sensitivity <input id="sensitivity" type="range" min="0.4" max="2.5" step="0.05" value="1"></label>
+        <label class="slider">Depth <input id="depth" type="range" min="0.2" max="1.6" step="0.05" value="1"></label>
+      </div>
+    </section>
+  </div>
+
+  <details>
+    <summary>How to visualize music from Spotify, Apple Music, YouTube, or your phone</summary>
+    <ul>
+      <li><b>Music playing on this PC</b> (any app or browser tab): click <b>Capture PC audio</b>, choose <b>Entire screen</b>, and turn on <b>Share system audio</b>. To follow one browser tab only, pick that tab and turn on <b>Share tab audio</b>.</li>
+      <li><b>Music on your phone or another device</b>: stream it to this PC over Bluetooth (Windows can act as a Bluetooth speaker), AirPlay or Spotify Connect, then use <b>Capture PC audio</b>. Or plug the device into the line-in, pick it from the list, and click <b>Use input</b>.</li>
+      <li><b>A room or a live set</b>: pick a microphone and click <b>Use input</b>.</li>
+      <li><b>No music handy</b>: <b>Demo loop</b> plays a built-in lo-fi beat.</li>
+    </ul>
+    <p>Keys: <kbd>1</kbd>–<kbd>5</kbd> styles · <kbd>←</kbd> <kbd>→</kbd> previous/next · <kbd>A</kbd> auto-cycle · <kbd>F</kbd> full view · <kbd>Esc</kbd> exit.
+       Captured audio is only analyzed in this page. Nothing is recorded or uploaded.</p>
+  </details>
+
+  <footer>
+    Glasses-free 3D in the <a href="https://displayxr.org/browser">DisplayXR Browser</a> on a Leia SR display; flat 2D in any other browser.
+    · <a href="https://github.com/joehillthunder/displayxr-music-visualizer">Source</a>
+  </footer>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+  "@displayxr/inline3d": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.45.1/js/inline3d.js",
+  "@displayxr/inline3d/three": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.45.1/js/inline3d-three.js"
+} }
+</script>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
