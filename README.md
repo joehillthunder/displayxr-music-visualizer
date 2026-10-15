@@ -56,6 +56,24 @@ Apple Music isn't built in. To visualize it, play it in the Apple Music app or w
 | 4 | **Cosmic Nebula** | A 26,000-star spiral galaxy, bass in the core and highs in the arms, ringed by the live waveform | The tilted disc hangs behind the glass and leans toward the louder channel. Beats send a shockwave that lifts stars toward you |
 | 5 | **Liquid Orb** | Iridescent liquid chrome with studio reflections inside a ring of stereo spectrum bars | The orb sits in the glass, and the front of the ring and the beat sparks come out of the screen |
 
+### Layouts, pop-out and motion
+
+Each style has three **layouts** that blend into each other over a few seconds. They change on a
+beat every ~28 s (**Change on the beat**), or with `V` or the Layout buttons:
+
+| Style | Layouts | What comes out of the screen |
+|---|---|---|
+| Lo-Fi Room | **Table** · **Wall** (the bars extrude straight toward you) · **Turntable** (the deck spins in mid-air) | Voxel sparks thrown off the loudest bars on each beat; rain and dust in front of the glass |
+| Impressionist Garden | **Garden** · **Starry Night** (strokes wheel around vortices) · **Field** (the painting tilts back into a meadow) | Petals blowing out of the painting, with a flurry on each beat |
+| Neon Horizon | **Road** · **Flyover** · **Canyon** | Neon wireframe shapes that race down the road toward you on the beat; the waveform laser in front of the glass |
+| Cosmic Nebula | **Spiral** · **Face-on** (the core bulges out of the glass) · **Orbit** (the galaxy turns so its arms swing toward you) | Comets streaking out of the deep field on the beat; shockwave-lifted stars; near-field dust |
+| Liquid Orb | **Ring** · **Sunburst** (the bars shoot straight out of the screen) · **Gyro** (the ring precesses around the orb) | Chrome satellites orbiting in front of the glass and behind it; beat sparks |
+
+Everything that comes out of the screen stops and fades about 5 cm in front of the glass (at the
+0.12 m virtual display scale) and shrinks near the window edges, where the frame would cut it
+off. The whole scene also sways slowly, so the depth keeps changing in quiet passages. The
+**Depth** slider scales how far everything reaches in and out.
+
 **Match colours to album art** (on by default) pulls five colours from the cover of whatever is
 playing and fades every style to them.
 
@@ -63,7 +81,13 @@ playing and fades every style to them.
 
 - **Per-eye post-processing:** each eye renders into a 4x multisampled HDR target, then goes
   through bloom and an output pass into its half of the side-by-side canvas. The Quality menu
-  sets this: Ultra (4x MSAA), High (2x) or Fast (none). The **Glow** slider scales the bloom.
+  sets this: Ultra (4x MSAA, up to 2560 px per eye), High (2x, up to 1920 px) or Fast (none). The
+  **Glow** slider scales the bloom.
+- **DisplayXR runtime:** the canvas is an inline-3D window (`createInline3D` + `addScene`), so the
+  DisplayXR Browser weaves it through the DisplayXR runtime, with eye-tracked views per frame. The
+  page logs its state to the console: `[visualizer] firstWoven woven=… confirmed=…` once, then
+  stereo and mono frame counts every 5 s. On the Leia demo PC (DisplayXR runtime 2.43.4), the
+  browser reported the window woven (`confirmed=true`), and after start-up every frame was stereo.
 - **Audio:** an 8192-point FFT reduced to 128 log-spaced bands (25 Hz to 18 kHz) with fast attack
   and slower release; a left/right analyser pair for stereo placement; the time-domain waveform;
   onset detection from low-weighted spectral flux; and a tempo (BPM) estimate from the onset
@@ -71,10 +95,11 @@ playing and fades every style to them.
 
 ## Controls
 
-`1`–`5` pick a style · `←` `→` previous/next · `Space` play/pause · `A` auto-cycle (changes
-style on a beat every ~40 s) · `F` full view · `Esc` exit.
+`1`–`5` pick a style · `←` `→` previous/next · `V` next layout · `Space` play/pause · `A`
+auto-cycle styles (on a beat every ~40 s) · `F` full view · `Esc` exit.
 
-URL parameters: `?style=lofi|impressionist|synthwave|nebula|orb`, `?auto`,
+URL parameters: `?style=lofi|impressionist|synthwave|nebula|orb`, `?var=0|1|2` (layout),
+`?novary` (hold the layout), `?auto`,
 `?quality=ultra|high|fast`, `?glow=0..2`, `?tab=spotify|youtube|more`, and `?demo`, which
 starts the demo loop at once.
 

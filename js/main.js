@@ -84,7 +84,10 @@ const fadeCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 // One composer, sized to an eye's viewport. Both eyes are the same size, so it is rebuilt only
 // when the canvas or the quality changes. Its last pass draws to the screen inside whatever
 // viewport and scissor are set, i.e. into the current eye's half.
-const QUALITY = { ultra: { samples: 4 }, high: { samples: 2 }, fast: null };
+// maxEyeW caps the post-processing resolution per eye; the output pass scales it up to the eye's
+// viewport. On an 8K panel each eye's viewport is ~3700 px wide, more detail than the weave shows,
+// and rendering bloom + MSAA at that size held the panel to ~30 fps.
+const QUALITY = { ultra: { samples: 4, maxEyeW: 2560 }, high: { samples: 2, maxEyeW: 1920 }, fast: null };
 let quality = params.get('quality') in QUALITY ? params.get('quality') : (store.get('quality') in QUALITY ? store.get('quality') : 'ultra');
 let glow = params.has('glow') ? Math.max(0, +params.get('glow') || 0) : 1;
 let composer = null, renderPass = null, bloomPass = null, composerSize = '';
@@ -204,9 +207,11 @@ function tick(dt) {
 function drawEye(cam, vp) {
   renderer.setViewport(vp.x, vp.y, vp.width, vp.height);
   renderer.setScissor(vp.x, vp.y, vp.width, vp.height);
-  style.beforeRender?.(vp.height);
-  if (QUALITY[quality]) {
-    ensureComposer(Math.round(vp.width), Math.round(vp.height));
+  const q = QUALITY[quality];
+  const s = q ? Math.min(1, q.maxEyeW / vp.width) : 1;
+  style.beforeRender?.(vp.height * s);   // point sprites size to the buffer they render into
+  if (q) {
+    ensureComposer(Math.round(vp.width * s), Math.round(vp.height * s));
     renderPass.camera = cam;
     composer.render();
   } else {
