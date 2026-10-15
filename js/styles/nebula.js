@@ -2,9 +2,21 @@
 // you. The core runs on the bass and the outer arms on the highs, so the spectrum spreads from
 // the centre outward. Each beat sends a shockwave through the disc that lifts the stars out
 // toward you. The live waveform circles the core as a ring of light, the disc leans toward the
-// louder stereo channel, and near-field dust drifts past in front of the screen.
+// louder stereo channel, near-field dust drifts past in front of the screen, and on each beat
+// comets streak out of the deep field toward you.
+//
+// Variations:
+//   Spiral    the disc tilted back, looking into it from above
+//   Face-on   the disc turned to face you, its core bulging out of the glass
+//   Orbit     the galaxy almost edge-on, slowly turning so its arms swing out toward you
 
-import { POINT_SIZE_GLSL, COLOR_GLSL, QUAD_VERT, Palette, resample, rand, disposeTree } from './common.js';
+import { POINT_SIZE_GLSL, COLOR_GLSL, QUAD_VERT, Palette, Blend, Flyers, resample, rand, disposeTree } from './common.js';
+
+const LAYOUTS = [
+  { rx: -1.05, pz: -0.035, scale: 1, bulge: 0, orbit: 0 },     // Spiral
+  { rx: -0.22, pz: -0.022, scale: 0.72, bulge: 1, orbit: 0 },  // Face-on
+  { rx: -1.38, pz: -0.026, scale: 0.85, bulge: 0.4, orbit: 1 }, // Orbit
+];
 
 const N = 26000;
 const DUST = 700;
@@ -22,6 +34,8 @@ export default class NebulaStyle {
   static bloom = { strength: 0.55, radius: 0.35, threshold: 0.6 };
   // Core, arm A, arm B, arm C, shockwave.
   static palette = ['#ffe0a8', '#ff4fb8', '#8a5cff', '#38c8ff', '#ffffff'];
+  static variations = ['Spiral', 'Face-on', 'Orbit'];
+  static drift = { yaw: 0.06, pitch: 0.04 };
 
   constructor(THREE) {
     this.group = new THREE.Group();
@@ -29,6 +43,10 @@ export default class NebulaStyle {
     this.bands = new Float32Array(BANDS);
     this.spin = 0;
     this.pulse = 10;
+    this.layout = new Blend(LAYOUTS[0]);
+    this.orbitYaw = 0;
+    this.c = new THREE.Color();
+    this.white = new THREE.Color(1, 1, 1);
 
     const seed = new Float32Array(N * 4);   // radius, angle, height, colour mix
     for (let i = 0; i < N; i++) {
@@ -46,11 +64,11 @@ export default class NebulaStyle {
     this.mat = new THREE.ShaderMaterial({
       uniforms: {
         uViewportH: { value: 1000 }, uSpin: { value: 0 }, uPulse: { value: 10 },
-        uLevel: { value: 0 }, uBands: { value: this.bands }, uPal: this.pal.uniform,
+        uLevel: { value: 0 }, uBulge: { value: 0 }, uBands: { value: this.bands }, uPal: this.pal.uniform,
       },
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
       vertexShader: POINT_SIZE_GLSL + COLOR_GLSL + /* glsl */`
-        uniform float uSpin, uPulse, uLevel;
+        uniform float uSpin, uPulse, uLevel, uBulge;
         uniform float uBands[${BANDS}];
         attribute vec4 seed;
         varying vec3 vColor;
@@ -61,7 +79,9 @@ export default class NebulaStyle {
           float a = seed.y + uSpin * (1.6 - t);                  // the inside turns faster
           float wave = exp(-pow((t - uPulse * 0.9) * 9.0, 2.0)) * exp(-uPulse * 1.2);
           float rr = r * (1.0 + band * 0.1 + wave * 0.08);
-          vec3 p = vec3(cos(a) * rr, sin(a) * rr, seed.z + wave * 0.018 + band * 0.006 * (1.0 - t));
+          // The shockwave lifts stars off the disc toward you; Face-on swells the core out too.
+          float lift = wave * 0.028 + band * 0.006 * (1.0 - t) + uBulge * (0.03 + band * 0.01) * pow(1.0 - t, 3.0);
+          vec3 p = vec3(cos(a) * rr, sin(a) * rr, seed.z + lift);
           vec4 mv = modelViewMatrix * vec4(p, 1.0);
           gl_Position = projectionMatrix * mv;
           gl_PointSize = max(1.0, pointPx(0.0009 + 0.0006 * (1.0 - t) + band * 0.0007 + wave * 0.0012, mv));
@@ -110,6 +130,7 @@ export default class NebulaStyle {
     // Tilt the disc so you look into it, centred a little behind the glass.
     this.disc = new THREE.Group();
     this.disc.position.z = -0.035;
+    this.disc.rotation.order = 'YXZ';   // tilt the disc, then turn it about the vertical
     this.disc.rotation.x = -1.05;
     this.disc.add(this.galaxy, this.ring);
     this.group.add(this.disc);
@@ -179,9 +200,15 @@ export default class NebulaStyle {
     this.dust = new THREE.Points(dg, this.dustMat);
     this.dust.frustumCulled = false;
     this.group.add(this.dust);
+
+    // Comets: bright heads that streak out of the deep field toward you on the beat.
+    this.comets = new Flyers(THREE, new THREE.SphereGeometry(1, 10, 8), new THREE.MeshBasicMaterial(), 60);
+    this.comets.drag = 0.2;
+    this.group.add(this.comets.mesh);
   }
 
   setPalette(rgbs) { this.pal.set(rgbs); }
+  setVariation(i) { this.layout.to(LAYOUTS[i % LAYOUTS.length]); }
 
   update(a, dt) {
     this.pal.update(dt);
@@ -196,7 +223,25 @@ export default class NebulaStyle {
     this.glowMat.uniforms.uBass.value = a.bass + a.beat * 0.3;
     this.dustMat.uniforms.uTreble.value = a.treble;
     this.ringMat.uniforms.uLevel.value = a.level;
-    this.disc.rotation.y = Math.sin(a.time * 0.07) * 0.12 + a.pan * 0.25;
+    const L = this.layout.update(dt, 0.6);
+    // Orbit turns the whole galaxy about the vertical; leaving it, it settles to the nearest turn.
+    if (L.orbit > 0.01) this.orbitYaw += dt * 0.12 * L.orbit;
+    else this.orbitYaw += (Math.round(this.orbitYaw / (Math.PI * 2)) * Math.PI * 2 - this.orbitYaw) * (1 - Math.exp(-dt * 0.8));
+    this.disc.rotation.x = L.rx;
+    this.disc.rotation.y = this.orbitYaw + Math.sin(a.time * 0.07) * 0.12 + a.pan * 0.25;
+    this.disc.position.z = L.pz;
+    this.disc.scale.setScalar(L.scale);
+    this.glow.position.z = L.pz + L.bulge * 0.02;
+    u.uBulge.value = L.bulge;
+
+    if (a.beat > 0.95) {
+      for (let k = 0; k < 2 + Math.floor(a.bass * 3); k++) {
+        this.pal.color(1 + Math.floor(Math.random() * 3), this.c).lerp(this.white, 0.4).multiplyScalar(2.2);
+        const x = rand(-0.06, 0.06), y = rand(-0.035, 0.035);
+        this.comets.spawn(x, y, -0.1, -x * 0.25, -y * 0.25, rand(0.1, 0.16), { life: 1.8, size: rand(0.0012, 0.002), color: this.c, spin: 0 });
+      }
+    }
+    this.comets.update(dt, 1);
 
     const rp = this.ring.geometry.attributes.position.array;
     const w = a.wave;

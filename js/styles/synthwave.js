@@ -1,9 +1,15 @@
 // Neon Horizon: an 80s synthwave road trip. A neon-gridded landscape rolls toward you out of the
 // screen. The mountains on the left are shaped by the left channel's spectrum history and those
 // on the right by the right channel's. A striped sun pulses with the bass, stars twinkle on the
-// highs, and the live waveform hangs over the road as a laser line.
+// highs, and the live waveform hangs just in front of the glass as a laser line. On each beat a
+// neon wireframe shape launches from the horizon and races down the road out toward you.
+//
+// Variations:
+//   Road      eye level on the road, the classic view
+//   Flyover   higher and faster, looking down onto the grid
+//   Canyon    tall mountains crowd in close around the road
 
-import { FRAME_W, POINT_SIZE_GLSL, COLOR_GLSL, QUAD_VERT, Palette, resample, rand, disposeTree } from './common.js';
+import { FRAME_W, POINT_SIZE_GLSL, COLOR_GLSL, QUAD_VERT, Palette, Blend, Flyers, resample, rand, disposeTree } from './common.js';
 
 const SX = 72;            // grid segments across
 const SZ = 56;            // grid segments deep (= spectrum history rows)
@@ -11,6 +17,12 @@ const DEPTH = 0.17;       // z from +0.045 back to -0.125
 const WIDTH = FRAME_W * 1.7;
 const ROW_DT = 1 / 22;
 const LASER = 192;
+
+const LAYOUTS = [
+  { rx: 0, py: 0, height: 1, road: 0.12, speed: 1 },          // Road
+  { rx: 0.24, py: 0.014, height: 0.75, road: 0.06, speed: 1.7 }, // Flyover
+  { rx: -0.05, py: -0.004, height: 1.9, road: 0.3, speed: 0.9 }, // Canyon
+];
 
 export default class SynthwaveStyle {
   static meta = {
@@ -21,6 +33,8 @@ export default class SynthwaveStyle {
   static bloom = { strength: 0.5, radius: 0.3, threshold: 0.78 };
   // Grid pink, grid cyan, sun top, sun bottom, sky.
   static palette = ['#ff2ebf', '#19e6ff', '#ffe14d', '#ff2a8c', '#6a0f6b'];
+  static variations = ['Road', 'Flyover', 'Canyon'];
+  static drift = { yaw: 0.07, pitch: 0.02 };
 
   constructor(THREE) {
     this.group = new THREE.Group();
@@ -31,6 +45,11 @@ export default class SynthwaveStyle {
     this.curR = new Float32Array(half + 1);
     this.acc = 0;
     this.rows = 0;
+    this.layout = new Blend(LAYOUTS[0]);
+    this.launch = 0;
+    this.c = new THREE.Color();
+    // The land (terrain, laser, flyers) is posed by the layout; sky, sun and stars stay put.
+    this.land = new THREE.Group();
 
     // Terrain: a plane lying flat at y = -0.04, front edge at z = +0.045.
     const geo = new THREE.PlaneGeometry(WIDTH, DEPTH, SX, SZ);
@@ -69,7 +88,7 @@ export default class SynthwaveStyle {
         }`,
     });
     this.terrain = new THREE.Mesh(geo, this.terrainMat);
-    this.group.add(this.terrain);
+    this.land.add(this.terrain);
 
     // Striped sun.
     this.sunMat = new THREE.ShaderMaterial({
@@ -172,10 +191,28 @@ export default class SynthwaveStyle {
     });
     this.laser = new THREE.Mesh(lg, this.laserMat);
     this.laser.frustumCulled = false;
-    this.group.add(this.laser);
+    this.land.add(this.laser);
+
+    // Neon wireframe shapes launched down the road on the beat.
+    this.shapes = [new THREE.OctahedronGeometry(1), new THREE.TetrahedronGeometry(1.2), new THREE.TorusGeometry(0.9, 0.12, 6, 24)]
+      .map((geo) => {
+        const f = new Flyers(THREE, geo, new THREE.MeshBasicMaterial({ wireframe: true }), 24);
+        f.drag = 0.15;
+        this.land.add(f.mesh);
+        return f;
+      });
+    this.group.add(this.land);
   }
 
   setPalette(rgbs) { this.pal.set(rgbs); }
+  setVariation(i) { this.layout.to(LAYOUTS[i % LAYOUTS.length]); }
+
+  _launch(a) {
+    const f = this.shapes[Math.floor(Math.random() * this.shapes.length)];
+    this.pal.color(Math.random() < 0.5 ? 0 : 1, this.c).multiplyScalar(1.8);
+    f.spawn(rand(-0.035, 0.035), rand(-0.022, 0.004), -0.115, rand(-0.01, 0.01), rand(0, 0.006), rand(0.11, 0.15) * (1 + a.level * 0.4),
+      { life: 2.2, size: rand(0.004, 0.0075), color: this.c, spin: 1.6 });
+  }
 
   update(a, dt) {
     this.pal.update(dt);
@@ -183,7 +220,10 @@ export default class SynthwaveStyle {
     resample(a.bandsL, half + 1, this.curL);
     resample(a.bandsR, half + 1, this.curR);
 
-    const speed = 1 + a.level * 2.5;
+    const L = this.layout.update(dt, 0.7);
+    this.land.rotation.x = L.rx;
+    this.land.position.y = L.py;
+    const speed = (1 + a.level * 2.5) * L.speed;
     this.acc += dt * speed;
     while (this.acc >= ROW_DT) {
       this.acc -= ROW_DT;
@@ -205,8 +245,8 @@ export default class SynthwaveStyle {
         const side = Math.abs(ix - half) / half;           // 0 at the road, 1 at the edge
         const bi = Math.round((1 - side) * half);           // bass at the outer edges
         const band = ix < half ? row[bi] : row[half + 1 + bi];
-        const valley = Math.max(0, side - 0.12) / 0.88;     // a flat road down the middle
-        arr[k + 1] = base[k + 1] + (band || 0) * 0.055 * valley ** 1.4;
+        const valley = Math.max(0, side - L.road) / (1 - L.road);   // a flat road down the middle
+        arr[k + 1] = base[k + 1] + (band || 0) * 0.055 * L.height * valley ** (1.4 / Math.sqrt(L.height));
         arr[k + 2] = base[k + 2] + frac * (DEPTH / SZ);
       }
     }
@@ -225,10 +265,15 @@ export default class SynthwaveStyle {
     for (let i = 0; i < LASER; i++) {
       const x = -0.1 + 0.2 * i / (LASER - 1);
       const y = -0.014 + a.wave[Math.floor(i / LASER * a.wave.length)] * 0.014;
-      lp.set([x, y - w, -0.045, x, y + w, -0.045], i * 6);
+      lp.set([x, y - w, 0.008, x, y + w, 0.008], i * 6);
     }
     this.laser.geometry.attributes.position.needsUpdate = true;
     this.laserMat.uniforms.uLevel.value = a.level;
+
+    // A shape on every beat, and now and then in quiet passages.
+    this.launch += dt;
+    if (a.beat > 0.95 || this.launch > 2.5) { this._launch(a); this.launch = 0; }
+    for (const f of this.shapes) f.update(dt, 1);
   }
 
   beforeRender(vpH) { this.starMat.uniforms.uViewportH.value = vpH; }

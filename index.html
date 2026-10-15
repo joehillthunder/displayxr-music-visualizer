@@ -93,6 +93,11 @@
   .chip[aria-pressed="true"] { border-color: var(--accent); background: #2a1631; }
   .chip[aria-pressed="true"] .key { background: var(--accent); color: #fff; }
 
+  .lbl { font-size: 13px; color: var(--muted); }
+  .seg { display: inline-flex; gap: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: none; border-radius: 0; padding: 6px 12px; background: #1c1930; font-size: 13px; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
   label.slider { display: grid; grid-template-columns: 92px 1fr; gap: 10px; align-items: center; font-size: 13px; color: var(--muted); }
   label.slider + label.slider { margin-top: 6px; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
@@ -214,6 +219,11 @@
       <h2>Style</h2>
       <div id="styles"></div>
       <div class="row" style="margin-top:12px">
+        <span class="lbl">Layout (V)</span>
+        <div id="variations" class="seg"></div>
+        <label class="toggle" style="margin-left:auto"><input id="auto-vary" type="checkbox" checked> Change on the beat</label>
+      </div>
+      <div class="row" style="margin-top:10px">
         <label class="toggle"><input id="auto" type="checkbox"> Auto-cycle styles on the beat</label>
         <button id="fill" type="button" aria-pressed="false" style="margin-left:auto">Full view (F)</button>
       </div>
@@ -239,7 +249,7 @@
       <li><b>Spotify from your phone:</b> after connecting, open Spotify on the phone, tap the speaker icon and choose <b>3D Music Visualizer</b>, then press <b>Play here &amp; listen</b> (or just Listen) on this page.</li>
       <li><b>Any other app:</b> <b>Other sources → Capture PC audio</b> with "Share system audio" on.</li>
     </ul>
-    <p>Keys: <kbd>1</kbd>–<kbd>5</kbd> styles · <kbd>←</kbd> <kbd>→</kbd> previous/next · <kbd>Space</kbd> play/pause · <kbd>A</kbd> auto-cycle · <kbd>F</kbd> full view · <kbd>Esc</kbd> exit.
+    <p>Keys: <kbd>1</kbd>–<kbd>5</kbd> styles · <kbd>←</kbd> <kbd>→</kbd> previous/next · <kbd>Space</kbd> play/pause · <kbd>V</kbd> next layout · <kbd>A</kbd> auto-cycle styles · <kbd>F</kbd> full view · <kbd>Esc</kbd> exit.
        Audio is only analyzed in this page. Nothing is recorded or uploaded. Service sign-ins stay in this browser.</p>
   </details>
 

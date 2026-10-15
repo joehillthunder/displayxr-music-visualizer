@@ -1,24 +1,39 @@
-// Lo-Fi Room: a chunky voxel spectrogram on a table that tilts away into the screen. The newest
-// row of the spectrum sits nearest you and older rows scroll back behind the glass. Each bar
-// wears a glowing cap, a low-poly moon hangs in the back, rain streaks down a pane in front of
-// the glass and dust drifts through the room.
+// Lo-Fi Room: a chunky voxel spectrogram. The newest row of the spectrum is at the front and
+// older rows scroll away from it. Each bar wears a glowing cap, a low-poly moon hangs in the
+// back, rain streaks down a pane in front of the glass, dust drifts through the room, and on
+// each beat the loudest bars throw voxel sparks out of the screen toward you.
+//
+// Variations:
+//   Table      the deck tilts away into the screen, like looking down at a desk
+//   Wall       the deck turns to face you and the bars extrude straight out of the glass
+//   Turntable  a smaller deck spins slowly in mid-air, its front edge sweeping out toward you
 
-import { FRAME_W, POINT_SIZE_GLSL, COLOR_GLSL, QUAD_VERT, Palette, resample, rand, disposeTree } from './common.js';
+import { FRAME_W, POINT_SIZE_GLSL, COLOR_GLSL, QUAD_VERT, Palette, Blend, Flyers, resample, rand, disposeTree } from './common.js';
 
 const COLS = 32;
 const ROWS = 22;
 const STEP = 0.004;         // heights snap to this, for the stepped "pixel" feel
 const ROW_DT = 1 / 14;      // seconds per history row
 const RAIN = 220;
+const PITCH_Z = 0.0058;
+const DECK_Z = (ROWS - 1) * PITCH_Z / 2;   // the deck is centred on the table's origin
+
+const LAYOUTS = [
+  { rx: 0.42, py: -0.019, pz: -0.044, scale: 1, hScale: 1, spin: 0 },     // Table
+  { rx: 1.35, py: 0, pz: -0.022, scale: 0.8, hScale: 1.5, spin: 0 },     // Wall
+  { rx: 0.62, py: -0.008, pz: -0.022, scale: 0.5, hScale: 1.6, spin: 0.22 }, // Turntable
+];
 
 export default class LofiStyle {
   static meta = {
     id: 'lofi',
     name: 'Lo-Fi Room',
-    blurb: 'Voxel spectrogram with glowing caps, a low-poly moon and rain on the glass.',
+    blurb: 'Voxel spectrogram with glowing caps and voxel sparks, a low-poly moon and rain on the glass.',
   };
   static bloom = { strength: 0.35, radius: 0.3, threshold: 0.85 };
   static palette = ['#ffb38a', '#ff7f9f', '#ffd6a0', '#5b6c9a', '#ffe9c4'];
+  static variations = ['Table', 'Wall', 'Turntable'];
+  static drift = { yaw: 0.08, pitch: 0.03 };
 
   constructor(THREE) {
     this.T = THREE;
@@ -28,37 +43,47 @@ export default class LofiStyle {
     this.cur = new Float32Array(COLS);
     this.acc = 0;
     this.t = 0;
+    this.yaw = 0;
+    this.layout = new Blend(LAYOUTS[0]);
+    this.variation = 0;
 
-    // The tilted "table": rows run from z = +0.024 (front) back.
     this.table = new THREE.Group();
-    this.table.rotation.x = 0.42;
-    this.table.position.set(0, -0.034, -0.01);
     this.group.add(this.table);
+    this.deck = new THREE.Group();
+    this.deck.position.z = DECK_Z;
+    this.table.add(this.deck);
 
     const pitchX = (FRAME_W * 0.94) / COLS;
     this.pitchX = pitchX;
-    this.pitchZ = 0.0058;
-    const box = new THREE.BoxGeometry(pitchX * 0.8, 1, this.pitchZ * 0.78);
-    box.translate(0, 0.5, 0);   // grow upward from the table
+    const box = new THREE.BoxGeometry(pitchX * 0.8, 1, PITCH_Z * 0.78);
+    box.translate(0, 0.5, 0);   // grow upward from the deck
     this.bars = new THREE.InstancedMesh(box, new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.05, flatShading: true }), COLS * ROWS);
     this.bars.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.table.add(this.bars);
+    this.deck.add(this.bars);
     // Glowing caps: a thin bright slab on top of each bar, brighter the louder it is.
-    const cap = new THREE.BoxGeometry(pitchX * 0.8, 0.0012, this.pitchZ * 0.78);
-    this.caps = new THREE.InstancedMesh(cap, new THREE.MeshBasicMaterial({ toneMapped: false }), COLS * ROWS);
+    const cap = new THREE.BoxGeometry(pitchX * 0.8, 0.0012, PITCH_Z * 0.78);
+    this.caps = new THREE.InstancedMesh(cap, new THREE.MeshBasicMaterial(), COLS * ROWS);
     this.caps.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.table.add(this.caps);
+    this.deck.add(this.caps);
 
     this.tmpC = new THREE.Color();
     this.backC = new THREE.Color();
+    this.front = [new THREE.Color(), new THREE.Color(), new THREE.Color()];
     this.m = new THREE.Matrix4();
+    this.v3 = new THREE.Vector3();
 
     const floor = new THREE.Mesh(
-      new THREE.BoxGeometry(FRAME_W * 0.99, 0.002, ROWS * this.pitchZ + 0.006),
+      new THREE.BoxGeometry(FRAME_W * 0.99, 0.002, ROWS * PITCH_Z + 0.006),
       new THREE.MeshStandardMaterial({ color: '#241d38', roughness: 0.9 }),
     );
-    floor.position.set(0, -0.001, 0.024 - (ROWS - 1) * this.pitchZ / 2);
-    this.table.add(floor);
+    floor.position.set(0, -0.001, -DECK_Z);
+    this.deck.add(floor);
+
+    // Voxel sparks thrown off the loudest bars on each beat.
+    this.sparks = new Flyers(THREE, new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial(), 160);
+    this.sparks.drag = 1.1;
+    this.sparks.gravity = 0.006;
+    this.group.add(this.sparks.mesh);
 
     // Low-poly moon with a soft halo, behind the glass.
     this.moonMat = new THREE.ShaderMaterial({
@@ -72,7 +97,7 @@ export default class LofiStyle {
           vec2 p = vUv - 0.5;
           // A 10-sided polygon for the low-poly look.
           float a = atan(p.y, p.x), seg = 6.2832 / 10.0;
-          float r = length(p) * cos(mod(a, seg) - seg * 0.5);   // distance in units of the apothem direction
+          float r = length(p) * cos(mod(a, seg) - seg * 0.5);
           float disc = step(r, 0.19);
           float halo = smoothstep(0.45, 0.2, r) * (0.25 + uGlow * 0.3);
           vec3 moon = mix(uPal[4], vec3(1.0, 0.97, 0.9), 0.4) * (0.78 + uGlow * 0.15);
@@ -83,14 +108,17 @@ export default class LofiStyle {
     });
     this.moon = new THREE.Mesh(new THREE.PlaneGeometry(0.13, 0.13), this.moonMat);
     this.moon.position.set(0.055, 0.03, -0.1);
+    this.moon.renderOrder = -1;
     this.group.add(this.moon);
 
-    // Dust motes, some in front of the glass.
-    const N = 360;
+    // Dust motes through the whole room, the nearest ones well out in front of the glass.
+    const N = 420;
     const pos = new Float32Array(N * 3);
     this.dustV = new Float32Array(N);
     for (let i = 0; i < N; i++) {
-      pos.set([rand(-0.12, 0.12), rand(-0.07, 0.07), rand(-0.08, 0.035)], i * 3);
+      const z = rand(-0.08, 0.045);
+      const k = z > 0.015 ? 0.7 : 1;   // pop-out dust stays nearer the middle
+      pos.set([rand(-0.12, 0.12) * k, rand(-0.07, 0.07) * k, z], i * 3);
       this.dustV[i] = rand(0.002, 0.007);
     }
     const g = new THREE.BufferGeometry();
@@ -113,12 +141,13 @@ export default class LofiStyle {
         }`,
     });
     this.dust = new THREE.Points(g, this.dustMat);
+    this.dust.frustumCulled = false;
     this.group.add(this.dust);
 
-    // Rain on a pane just in front of the glass: short streaks, faster with the music.
+    // Rain on a pane in front of the glass: short streaks, faster with the music.
     const rp = new Float32Array(RAIN * 6);
     this.rain = new Float32Array(RAIN * 4);   // x, y, z, speed
-    for (let i = 0; i < RAIN; i++) this.rain.set([rand(-0.11, 0.11), rand(-0.07, 0.07), rand(0.004, 0.03), rand(0.06, 0.12)], i * 4);
+    for (let i = 0; i < RAIN; i++) this.rain.set([rand(-0.11, 0.11), rand(-0.07, 0.07), rand(0.004, 0.032), rand(0.06, 0.12)], i * 4);
     const rg = new THREE.BufferGeometry();
     rg.setAttribute('position', new THREE.BufferAttribute(rp, 3));
     this.rainMat = new THREE.LineBasicMaterial({ color: '#9fb6ff', transparent: true, opacity: 0.35, depthWrite: false });
@@ -136,10 +165,25 @@ export default class LofiStyle {
 
   setPalette(rgbs) { this.pal.set(rgbs); }
 
+  setVariation(i) {
+    this.variation = i % LAYOUTS.length;
+    this.layout.to(LAYOUTS[this.variation]);
+  }
+
   update(a, dt) {
+    const T = this.T;
     this.t += dt;
     this.pal.update(dt);
     resample(a.bands, COLS, this.cur);
+    const L = this.layout.update(dt, 0.8);
+
+    // Table pose. A spinning layout turns continuously; leaving it, the deck settles back to the
+    // nearest full turn instead of unwinding.
+    if (L.spin > 0.01) this.yaw += dt * L.spin * (1 + a.level * 0.6);
+    else this.yaw += (Math.round(this.yaw / (Math.PI * 2)) * Math.PI * 2 - this.yaw) * (1 - Math.exp(-dt * 1.2));
+    this.table.rotation.set(L.rx, this.yaw, 0);
+    this.table.position.set(0, L.py, L.pz);
+    this.table.scale.setScalar(L.scale);
 
     this.acc += dt;
     while (this.acc >= ROW_DT) {
@@ -148,24 +192,24 @@ export default class LofiStyle {
     }
     this.hist[0].set(this.cur);
 
-    const front = [this.pal.color(0, new this.T.Color()), this.pal.color(1, new this.T.Color()), this.pal.color(2, new this.T.Color())];
+    for (let k = 0; k < 3; k++) this.pal.color(k, this.front[k]);
     this.pal.color(3, this.backC).multiplyScalar(0.7);
     let i = 0;
     for (let r = 0; r < ROWS; r++) {
       const fade = r / (ROWS - 1);
       for (let c = 0; c < COLS; c++, i++) {
         const v = this.hist[r][c];
-        const h = Math.max(STEP, Math.round((0.002 + v * v * 0.05) / STEP) * STEP);
+        const h = Math.max(STEP, Math.round((0.002 + v * v * 0.05 * L.hScale) / STEP) * STEP);
         const x = (c - (COLS - 1) / 2) * this.pitchX;
-        const z = 0.024 - r * this.pitchZ;
+        const z = -r * PITCH_Z;
         this.m.makeScale(1, h, 1).setPosition(x, 0, z);
         this.bars.setMatrixAt(i, this.m);
         this.m.makeTranslation(x, h + 0.0006, z);
         this.caps.setMatrixAt(i, this.m);
-        this.tmpC.copy(front[(c + r) % 3]).lerp(this.backC, Math.min(1, fade * 1.1));
+        this.tmpC.copy(this.front[(c + r) % 3]).lerp(this.backC, Math.min(1, fade * 1.1));
         const lum = Math.round((0.5 + v * 0.7) * 4) / 4;      // a limited, stepped palette
         this.bars.setColorAt(i, this.tmpC.multiplyScalar(lum));
-        this.tmpC.copy(front[(c + r) % 3]).multiplyScalar((0.4 + v * v * 1.6) * (1 - fade * 0.75));
+        this.tmpC.copy(this.front[(c + r) % 3]).multiplyScalar((0.4 + v * v * 1.6) * (1 - fade * 0.75));
         this.caps.setColorAt(i, this.tmpC);
       }
     }
@@ -174,8 +218,26 @@ export default class LofiStyle {
     this.caps.instanceMatrix.needsUpdate = true;
     this.caps.instanceColor.needsUpdate = true;
 
+    // Beat: sparks from the tops of the loudest front-row bars, up and out toward you.
+    if (a.beat > 0.95) {
+      this.table.updateMatrix();
+      this.deck.updateMatrix();
+      const row = this.hist[0];
+      const order = [...row.keys()].sort((p, q) => row[q] - row[p]).slice(0, 3 + Math.floor(a.bass * 5));
+      for (const c of order) {
+        const h = 0.002 + row[c] * row[c] * 0.05 * L.hScale;
+        this.v3.set((c - (COLS - 1) / 2) * this.pitchX, h, 0).applyMatrix4(this.deck.matrix).applyMatrix4(this.table.matrix);
+        for (let k = 0; k < 2; k++) {
+          this.sparks.spawn(this.v3.x, this.v3.y, this.v3.z,
+            rand(-0.008, 0.008), rand(0.012, 0.03), rand(0.035, 0.07),
+            { life: rand(1.3, 2.0), size: rand(0.0022, 0.0038), color: this.front[c % 3], spin: 4 });
+        }
+      }
+    }
+    this.sparks.update(dt, 1.4);
+
     // Tape wow: a slow, slightly uneven sway.
-    this.group.rotation.y = Math.sin(this.t * 0.31) * 0.07 + Math.sin(this.t * 0.83) * 0.015;
+    this.group.rotation.y = Math.sin(this.t * 0.31) * 0.05 + Math.sin(this.t * 0.83) * 0.012;
 
     const s = 1 + a.bass * 0.15 + a.beat * 0.05;
     this.moon.scale.setScalar(s);

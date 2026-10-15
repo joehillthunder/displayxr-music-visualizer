@@ -3,9 +3,29 @@
 // so each eye sees slightly different colours. Around it, a tilted ring of spectrum bars
 // carries the left channel on the left and the right channel on the right, with the bass at the
 // back framing the orb and the treble at the front, where the ring comes out of the screen. A
-// halo of light traces the live waveform, and each beat throws sparks off the surface toward you.
+// halo of light traces the live waveform, each beat throws sparks off the surface toward you, and
+// small chrome satellites orbit the orb, passing out in front of the glass and back behind it.
+//
+// Variations:
+//   Ring       the ring tilted back like a turntable platter
+//   Sunburst   the ring turned to face you, its bars shooting straight out of the screen
+//   Gyro       the tilted ring precesses around the orb, its front edge sweeping toward you
 
-import { NOISE_GLSL, COLOR_GLSL, POINT_SIZE_GLSL, Palette, resample, rand, disposeTree } from './common.js';
+import { NOISE_GLSL, COLOR_GLSL, POINT_SIZE_GLSL, Palette, Blend, resample, rand, disposeTree } from './common.js';
+
+const LAYOUTS = [
+  { rx: 0.38, ringY: -0.02, ringZ: -0.008, orbZ: -0.008, gyro: 0 },  // Ring
+  { rx: 1.5708, ringY: 0, ringZ: -0.022, orbZ: -0.006, gyro: 0 },    // Sunburst
+  { rx: 0.95, ringY: 0, ringZ: -0.01, orbZ: 0.0, gyro: 1 },          // Gyro
+];
+
+// Satellites: orbit radius, tilt of the orbit, speed, size.
+const SATELLITES = [
+  [0.048, 0.35, 0.55, 0.0042],
+  [0.056, -0.5, -0.4, 0.0032],
+  [0.044, 1.2, 0.75, 0.0026],
+  [0.06, -1.0, 0.3, 0.0036],
+];
 
 const BARS = 80;
 const RING_R = 0.05;
@@ -20,6 +40,8 @@ export default class OrbStyle {
   };
   static bloom = { strength: 0.4, radius: 0.3, threshold: 0.88 };
   static palette = ['#7a5cff', '#22d3ee', '#a3ff7a', '#ff5fae', '#ffd36b'];
+  static variations = ['Ring', 'Sunburst', 'Gyro'];
+  static drift = { yaw: 0.1, pitch: 0.06 };
 
   constructor(THREE) {
     this.T = THREE;
@@ -28,20 +50,23 @@ export default class OrbStyle {
     this.L = new Float32Array(32);
     this.R = new Float32Array(32);
     this.hue = 0;
+    this.layout = new Blend(LAYOUTS[0]);
+    this.gyroYaw = 0;
+    this.satT = 0;
 
     this.orbMat = new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 }, uBass: { value: 0 }, uTreble: { value: 0 }, uBeat: { value: 0 },
-        uHue: { value: 0 }, uPal: this.pal.uniform,
+        uHue: { value: 0 }, uAmp: { value: 1 }, uPal: this.pal.uniform,
       },
       vertexShader: NOISE_GLSL + /* glsl */`
-        uniform float uTime, uBass, uTreble, uBeat;
+        uniform float uTime, uBass, uTreble, uBeat, uAmp;
         varying vec3 vWorld;
         varying vec3 vNormal;
         float disp(vec3 n) {
           float big = snoise(n * 1.6 + vec3(0.0, uTime * 0.35, 0.0));
           float fine = snoise(n * 6.0 + vec3(uTime * 0.9));
-          return big * (0.0025 + uBass * 0.006 + uBeat * 0.003) + fine * (0.0004 + uTreble * 0.0018);
+          return uAmp * (big * (0.0025 + uBass * 0.006 + uBeat * 0.003) + fine * (0.0004 + uTreble * 0.0018));
         }
         vec3 surf(vec3 n, float r) { return n * (r + disp(n)); }
         void main() {
@@ -95,6 +120,7 @@ export default class OrbStyle {
     // Ring of bars.
     this.ring = new THREE.Group();
     this.ring.position.set(0, -0.02, -0.008);
+    this.ring.rotation.order = 'YXZ';   // tilt the ring, then turn it about the vertical (Gyro)
     this.ring.rotation.x = 0.38;   // tilt the top back, so the front of the ring comes out at you
     this.group.add(this.ring);
     const bar = new THREE.BoxGeometry(0.0022, 1, 0.0022);
@@ -172,9 +198,23 @@ export default class OrbStyle {
     this.sparks = new THREE.Points(sg, this.sparkMat);
     this.sparks.frustumCulled = false;
     this.group.add(this.sparks);
+
+    // Chrome satellites: the orb's own material at a fraction of the ripple, sharing its uniforms.
+    const satMat = new THREE.ShaderMaterial({
+      uniforms: { ...this.orbMat.uniforms, uAmp: { value: 0.12 } },
+      vertexShader: this.orbMat.vertexShader,
+      fragmentShader: this.orbMat.fragmentShader,
+    });
+    this.sats = SATELLITES.map(([r, tilt, speed, size], i) => {
+      const m = new THREE.Mesh(new THREE.IcosahedronGeometry(size, 12), satMat);
+      m.userData = { r, tilt, speed, phase: i * 1.7 };
+      this.group.add(m);
+      return m;
+    });
   }
 
   setPalette(rgbs) { this.pal.set(rgbs); }
+  setVariation(i) { this.layout.to(LAYOUTS[i % LAYOUTS.length]); }
 
   update(a, dt) {
     const T = this.T;
@@ -191,7 +231,25 @@ export default class OrbStyle {
     this.orb.scale.setScalar(1 + a.beat * 0.05 + a.bass * 0.05);
     this.orb.rotation.y += dt * (0.2 + a.mid * 0.8);
 
-    this.ring.rotation.y = Math.sin(a.time * 0.12) * 0.25;
+    const Lt = this.layout.update(dt, 0.7);
+    if (Lt.gyro > 0.01) this.gyroYaw += dt * (0.35 + a.level * 0.5) * Lt.gyro;
+    else this.gyroYaw += (Math.round(this.gyroYaw / (Math.PI * 2)) * Math.PI * 2 - this.gyroYaw) * (1 - Math.exp(-dt * 1.0));
+    this.ring.rotation.x = Lt.rx;
+    this.ring.rotation.y = this.gyroYaw + Math.sin(a.time * 0.12) * 0.25 * (1 - Lt.gyro);
+    this.ring.position.set(0, Lt.ringY, Lt.ringZ);
+    this.orb.position.z = Lt.orbZ;
+    this.halo.position.z = Lt.orbZ;
+
+    // Satellites on tilted circular orbits around the orb: in front of the glass at the near
+    // side of each orbit, behind the orb at the far side.
+    this.satT += dt * (0.6 + a.level * 0.8);
+    for (const s of this.sats) {
+      const { r, tilt, speed, phase } = s.userData;
+      const ang = this.satT * speed + phase;
+      const x = Math.cos(ang) * r, z0 = Math.sin(ang) * r;
+      s.position.set(x, Math.sin(tilt) * z0 * 0.6, Lt.orbZ + Math.cos(tilt * 0.5) * z0 * 0.72);
+      s.scale.setScalar(1 + a.bass * 0.35 + a.beat * 0.2);
+    }
     for (let i = 0; i < BARS; i++) {
       const ang = (i / BARS) * Math.PI * 2;
       const x = Math.cos(ang) * RING_R, z = Math.sin(ang) * RING_R;
@@ -225,7 +283,7 @@ export default class OrbStyle {
         const i = this.next = (this.next + 1) % SPARKS;
         const th = Math.random() * Math.PI * 2, ph = Math.acos(rand(-0.2, 1));
         const dx = Math.sin(ph) * Math.cos(th), dy = Math.sin(ph) * Math.sin(th), dz = Math.cos(ph);
-        this.sp.set([dx * 0.032, dy * 0.032, -0.008 + dz * 0.032], i * 3);
+        this.sp.set([dx * 0.032, dy * 0.032, this.orb.position.z + dz * 0.032], i * 3);
         const sp = rand(0.03, 0.08) * (0.6 + a.bass);
         this.sv.set([dx * sp, dy * sp, dz * sp], i * 3);
         this.life[i] = 1;

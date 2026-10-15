@@ -59,6 +59,10 @@ renderer.toneMapping = THREE.NoToneMapping;
 const scene = new THREE.Scene();
 const root = new THREE.Group();          // depth slider scales this along z
 scene.add(root);
+// Slow sway of the whole scene, so the depth keeps changing even when the music is quiet. It
+// moves the content, never the eyes: on a display rig the runtime owns the viewpoint.
+const drift = new THREE.Group();
+root.add(drift);
 
 const eye = new EyeCamera(THREE);
 const feather = new EdgeFeather(THREE, { px: 28 });
@@ -132,16 +136,32 @@ let last = 0;
 let lastGood = null;           // [{ proj, xf, vp }] copies from the last valid stereo frame
 let artPalette = null;         // album-art colours, sRGB triples
 let matchArt = true;
+let variation = Math.max(0, +params.get('var') || 0);
+let autoVary = !params.has('novary');
+let varClock = 0;
+let driftT = 0;
+const VARY_SECONDS = 28;
 
 function mountStyle(i) {
-  if (style) { root.remove(style.group); style.dispose(); }
+  if (style) { drift.remove(style.group); style.dispose(); }
   styleIndex = i;
   style = new STYLES[i](THREE);
-  root.add(style.group);
+  drift.add(style.group);
   if (matchArt && artPalette) style.setPalette?.(artPalette);
   applyBloom();
   autoClock = 0;
+  setVariation(variation);
+  // A new style starts already in its layout rather than blending in from the default.
+  if (style.layout) Object.assign(style.layout.cur, style.layout.target);
   syncStyleButtons();
+}
+
+function setVariation(v) {
+  const names = style.constructor.variations || [];
+  variation = names.length ? ((v % names.length) + names.length) % names.length : 0;
+  style.setVariation?.(variation);
+  varClock = 0;
+  renderVariations();
 }
 
 function requestStyle(i) {
@@ -164,6 +184,18 @@ function tick(dt) {
     autoClock += dt;
     if (autoClock > AUTO_SECONDS && audio.beat > 0.9) requestStyle(styleIndex + 1);
   }
+  if (autoVary && pendingIndex < 0) {
+    varClock += dt;
+    if (varClock > VARY_SECONDS && audio.beat > 0.9) setVariation(variation + 1);
+  }
+  // Two incommensurate sines per axis, so the sway never visibly repeats.
+  driftT += dt * (0.6 + audio.level * 0.8);
+  const d = style.constructor.drift || { yaw: 0.08, pitch: 0.03 };
+  drift.rotation.set(
+    d.pitch * (Math.sin(driftT * 0.13) * 0.7 + Math.sin(driftT * 0.071 + 1.3) * 0.3),
+    d.yaw * (Math.sin(driftT * 0.09) * 0.7 + Math.sin(driftT * 0.053 + 0.4) * 0.3),
+    0,
+  );
   style.update(audio, dt);
   meterTick();
 }
@@ -291,10 +323,18 @@ async function boot() {
         setStatus('3D layer lost: showing 2D', 'warn');
       },
     });
+    console.info('[visualizer] inline-3D session live: addScene registered, waiting for the first woven frame');
     const r = await handle.firstWoven;
     cover.remove();               // hard cut, never a fade
-    setStatus(r.woven ? 'Glasses-free 3D on. Move your head to look around.' : '3D window not woven: ' + r.reason, r.woven ? 'ok' : 'warn');
+    console.info(`[visualizer] firstWoven woven=${r.woven} confirmed=${r.confirmed} reason=${r.reason} ms=${Math.round(r.ms)}`);
+    setStatus(r.woven ? 'Glasses-free 3D on (DisplayXR). Move your head to look around.' : '3D window not woven: ' + r.reason, r.woven ? 'ok' : 'warn');
+    // Every 5 s: stereo vs mono frames, so a session that keeps falling back shows up in the log.
+    setInterval(() => {
+      const s = handle.stats?.();
+      if (s) console.info(`[visualizer] frames=${s.frames} monoFrames=${s.monoFrames} wovenState=${handle.wovenState ?? 'n/a'} buffer=${canvas.width}x${canvas.height}`);
+    }, 5000);
   } else {
+    console.info('[visualizer] no inline-3D session: rendering 2D');
     cover.remove();
     setStatus('2D preview. Open this page in the DisplayXR Browser on a 3D display for glasses-free depth.', '');
     requestAnimationFrame(onMonoFrame);
@@ -322,6 +362,22 @@ function syncStyleButtons() {
   u.searchParams.set('style', STYLES[styleIndex].meta.id);
   history.replaceState(null, '', u);
 }
+
+const varBar = $('variations');
+function renderVariations() {
+  const names = style?.constructor.variations || [];
+  varBar.replaceChildren(...names.map((n, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = n;
+    b.setAttribute('aria-pressed', String(i === variation));
+    b.addEventListener('click', () => setVariation(i));
+    return b;
+  }));
+}
+const varyBox = $('auto-vary');
+varyBox.checked = autoVary;
+varyBox.addEventListener('change', () => { autoVary = varyBox.checked; varClock = 0; });
 
 const autoBox = $('auto');
 autoBox.checked = auto;
@@ -502,6 +558,7 @@ addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft') requestStyle(styleIndex - 1);
   else if (e.key === ' ') { e.preventDefault(); activeService?.toggle(); }
   else if (e.key === 'a' || e.key === 'A') { autoBox.checked = auto = !auto; autoClock = 0; }
+  else if (e.key === 'v' || e.key === 'V') setVariation(variation + 1);
   else if (e.key === 'f' || e.key === 'F') setFill(!document.body.classList.contains('fill'));
   else if (e.key === 'Escape') setFill(false);
 });

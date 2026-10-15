@@ -5,7 +5,10 @@
 //   static meta = { id, name, blurb }
 //   static bloom = { strength, radius, threshold }   glow settings for the bloom pass
 //   static palette = [5 x '#rrggbb']                 the style's own colours
+//   static variations = ['Name', ...]                layouts the style can blend between
+//   static drift = { yaw, pitch }                    how far main.js slowly sways the scene (radians)
 //   constructor(THREE)      builds this.group (added to the scene by main.js)
+//   setVariation(i)         start blending to layout i
 //   update(audio, dt)       advance one frame from the AudioEngine's features
 //   setPalette(rgb[5]|null) blend toward album-art colours (sRGB 0..1 triples), or back to its own
 //   beforeRender(vpHeight)  optional: called before each eye with that eye's viewport height in
@@ -111,6 +114,109 @@ export class Palette {
   }
   /** Palette entry i as a THREE.Color (converted from sRGB for built-in materials). */
   color(i, out = this._c) { const c = this.cur[i % 5]; return out.setRGB(c[0], c[1], c[2], this.T.SRGBColorSpace); }
+}
+
+// ---- depth helpers -------------------------------------------------------------------------------
+
+// How far in front of the glass anything may come, in metres at the 0.12 m virtual display height.
+// Past this, pop-out stops being comfortable and starts to double.
+export const POP_MAX = 0.05;
+
+/**
+ * Eases a set of numbers toward targets, so switching a style's variation blends its layout over
+ * a few seconds instead of jumping.
+ */
+export class Blend {
+  constructor(values) { this.cur = { ...values }; this.target = { ...values }; }
+  to(values) { Object.assign(this.target, values); }
+  update(dt, rate = 0.9) {
+    const k = 1 - Math.exp(-dt * rate);
+    for (const key in this.target) this.cur[key] += (this.target[key] - this.cur[key]) * k;
+    return this.cur;
+  }
+}
+
+/**
+ * A pool of short-lived objects that fly out of the screen: spawn() one with a position and a
+ * velocity, and it tumbles along, grows in, shrinks out at the end of its life, and slows and
+ * fades before it passes POP_MAX. Objects that come in front of the glass also shrink near the
+ * window's edges, where the frame would cut them off (a "window violation" that breaks the 3D).
+ * One InstancedMesh, so hundreds cost one draw call.
+ */
+export class Flyers {
+  constructor(THREE, geometry, material, count) {
+    this.mesh = new THREE.InstancedMesh(geometry, material, count);
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.mesh.frustumCulled = false;
+    this.n = count;
+    this.next = 0;
+    this.drag = 0.8;
+    this.gravity = 0;
+    this.p = new Float32Array(count * 3);
+    this.v = new Float32Array(count * 3);
+    this.rot = new Float32Array(count * 3);
+    this.spin = new Float32Array(count * 3);
+    this.life = new Float32Array(count);
+    this.maxLife = new Float32Array(count).fill(1);
+    this.size = new Float32Array(count);
+    this.col = Array.from({ length: count }, () => new THREE.Color());
+    this.m = new THREE.Matrix4();
+    this.q = new THREE.Quaternion();
+    this.e = new THREE.Euler();
+    this.pos = new THREE.Vector3();
+    this.scl = new THREE.Vector3();
+    this.c = new THREE.Color();
+    this.m.makeScale(0, 0, 0);
+    for (let i = 0; i < count; i++) { this.mesh.setMatrixAt(i, this.m); this.mesh.setColorAt(i, this.c.setRGB(0, 0, 0)); }
+  }
+
+  spawn(x, y, z, vx, vy, vz, { life = 1.5, size = 0.003, color = null, spin = 3, rot = null } = {}) {
+    const i = this.next = (this.next + 1) % this.n;
+    const o = i * 3;
+    this.p[o] = x; this.p[o + 1] = y; this.p[o + 2] = z;
+    this.v[o] = vx; this.v[o + 1] = vy; this.v[o + 2] = vz;
+    if (rot) { this.rot[o] = rot[0]; this.rot[o + 1] = rot[1]; this.rot[o + 2] = rot[2]; }
+    else { this.rot[o] = Math.random() * 6.28; this.rot[o + 1] = Math.random() * 6.28; this.rot[o + 2] = Math.random() * 6.28; }
+    this.spin[o] = rand(-spin, spin); this.spin[o + 1] = rand(-spin, spin); this.spin[o + 2] = rand(-spin, spin);
+    this.life[i] = this.maxLife[i] = life;
+    this.size[i] = size;
+    if (color) this.col[i].copy(color);
+    return i;
+  }
+
+  update(dt, brightness = 1) {
+    const drag = Math.exp(-dt * this.drag);
+    for (let i = 0; i < this.n; i++) {
+      if (this.life[i] <= 0) continue;
+      this.life[i] -= dt;
+      const o = i * 3;
+      this.v[o + 1] -= this.gravity * dt;
+      for (let k = 0; k < 3; k++) {
+        this.p[o + k] += this.v[o + k] * dt;
+        this.v[o + k] *= drag;
+        this.rot[o + k] += this.spin[o + k] * dt;
+      }
+      const z = this.p[o + 2];
+      let fade = 1;
+      if (z > POP_MAX * 0.75) {
+        this.v[o + 2] *= Math.exp(-dt * 6);                                      // brake
+        fade = Math.max(0, 1 - (z - POP_MAX * 0.75) / (POP_MAX * 0.25));
+      }
+      if (z > 0) {                                                               // keep pop-out off the edges
+        const ex = Math.min(1, Math.max(0, (0.1 - Math.abs(this.p[o])) / 0.025));
+        const ey = Math.min(1, Math.max(0, (0.056 - Math.abs(this.p[o + 1])) / 0.015));
+        fade *= Math.min(ex, ey);
+      }
+      const t = Math.max(0, this.life[i] / this.maxLife[i]);                   // 1 → 0 over the life
+      const s = this.size[i] * Math.min(1, (1 - t) * 8) * Math.min(1, t * 3.5) * fade;
+      this.e.set(this.rot[o], this.rot[o + 1], this.rot[o + 2]);
+      this.m.compose(this.pos.set(this.p[o], this.p[o + 1], z), this.q.setFromEuler(this.e), this.scl.set(s, s, s));
+      this.mesh.setMatrixAt(i, this.m);
+      this.mesh.setColorAt(i, this.c.copy(this.col[i]).multiplyScalar(brightness * (0.5 + t * 0.7)));
+    }
+    this.mesh.instanceMatrix.needsUpdate = true;
+    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
+  }
 }
 
 /** Average of bands[from..to). */
