@@ -1,7 +1,7 @@
 # 3D Music Visualizer
 
-A music visualizer with real depth on glasses-free 3D displays. It plays music from **Spotify**,
-**Apple Music** or **YouTube** inside the page, or follows anything else the PC plays. It's built on
+A music visualizer with real depth on glasses-free 3D displays. It plays music from **Spotify** or
+**YouTube** inside the page, or follows anything else the PC plays. It's built on
 [DisplayXR](https://displayxr.org), so on a Leia SR display in the DisplayXR Browser the visuals
 come out of the screen and you can look around them. In any other browser it runs in 2D.
 
@@ -20,11 +20,10 @@ come out of the screen and you can look around them. In any other browser it run
 | Service | What you get | What it needs |
 |---|---|---|
 | **Spotify** | Sign in; the page becomes a Spotify Connect speaker called "3D Music Visualizer" (pick it from the Spotify app on your phone); paste links; now playing, album art, play/pause/skip | A Spotify app client ID (below). In-page playback needs **Premium**; on Free, play in the Spotify app and use Listen to PC audio, and now playing still follows along |
-| **Apple Music** | Paste a song, album or playlist link and it plays in the page; sign in for full tracks (30-second previews otherwise); now playing and album art | A MusicKit developer token (below). Without one, use the Apple Music web player in another tab and capture that tab |
 | **YouTube / YouTube Music** | Paste a video or playlist link; the player sits in the page; title and thumbnail | Nothing |
 | **Anything else** | Capture PC audio (any app, a Bluetooth or AirPlay receiver), a microphone or line-in, a local file, or the built-in demo loop | Nothing |
 
-**Why the page "listens to this tab".** Spotify and Apple Music protect their audio with DRM, and
+**Why the page "listens to this tab".** Spotify protects its audio with DRM, and
 the YouTube player runs in a locked cross-origin frame, so no web page can read their audio
 directly. Spotify has also closed its audio-analysis API to new apps. So the page plays the
 music itself and then captures its own tab's audio for analysis. When Chrome asks, pick **This
@@ -44,13 +43,8 @@ in the page and is never recorded or uploaded.
 
 The client ID isn't a secret: sign-in uses PKCE, so there's no client secret and no server.
 
-### Setting up Apple Music (optional)
-
-MusicKit needs a developer token: a JWT signed with a MusicKit key from an Apple Developer
-Program account
-([Apple's guide](https://developer.apple.com/documentation/applemusicapi/generating-developer-tokens)).
-Restrict it to this site's origin, then put it in `js/config.js` (`APPLE_MUSIC_DEVELOPER_TOKEN`) or
-paste it into the Apple Music tab.
+Apple Music isn't built in. To visualize it, play it in the Apple Music app or web player and use
+**Other sources → Capture PC audio**.
 
 ## Styles
 
@@ -81,7 +75,7 @@ playing and fades every style to them.
 style on a beat every ~40 s) · `F` full view · `Esc` exit.
 
 URL parameters: `?style=lofi|impressionist|synthwave|nebula|orb`, `?auto`,
-`?quality=ultra|high|fast`, `?glow=0..2`, `?tab=spotify|apple|youtube|more`, and `?demo`, which
+`?quality=ultra|high|fast`, `?glow=0..2`, `?tab=spotify|youtube|more`, and `?demo`, which
 starts the demo loop at once.
 
 ## Hardware
@@ -90,9 +84,9 @@ starts the demo loop at once.
   [DisplayXR Browser](https://displayxr.org/browser).
 - **Anywhere else:** any modern desktop browser shows it in 2D, with slight mouse parallax.
   Capturing tab or PC audio needs a Chromium browser (Chrome or Edge) on Windows or ChromeOS.
-- Spotify's and Apple's in-page players need a browser with Widevine DRM. If the DisplayXR Browser
-  build doesn't include it, play in the Spotify or Apple Music app and use **Capture PC audio**;
-  Spotify's now-playing card and controls still work.
+- Spotify's in-page player needs a browser with Widevine DRM. If the DisplayXR Browser build
+  doesn't include it, play in the Spotify app and use **Listen to PC audio**; the now-playing card
+  and controls still work.
 
 ## How it works
 
@@ -107,8 +101,8 @@ starts the demo loop at once.
   no CSS effects on the canvas.
 - `js/audio.js`: capture and analysis, plus the demo synth. `js/palette.js`: album-art palette
   extraction.
-- `js/services/`: Spotify (PKCE sign-in, Web Playback SDK, Web API), Apple Music (MusicKit JS v3)
-  and YouTube (IFrame API). `js/config.js` holds the optional credentials.
+- `js/services/`: Spotify (PKCE sign-in, Web Playback SDK, Web API) and YouTube (IFrame API).
+  `js/config.js` holds the optional Spotify client ID.
 - `js/styles/*.js`: one file per style, all with the same small interface (see
   `js/styles/common.js`). Each is authored in metres around the z = 0 glass plane, where +z is
   toward the viewer. Shader colours are authored in sRGB and converted to linear, so they match

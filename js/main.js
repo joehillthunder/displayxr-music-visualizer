@@ -18,9 +18,8 @@ import { createInline3D } from '@displayxr/inline3d';
 import { EyeCamera, EdgeFeather } from '@displayxr/inline3d/three';
 import { AudioEngine } from './audio.js';
 import { paletteFromImage } from './palette.js';
-import { SPOTIFY_CLIENT_ID, APPLE_MUSIC_DEVELOPER_TOKEN } from './config.js';
+import { SPOTIFY_CLIENT_ID } from './config.js';
 import { SpotifyService } from './services/spotify.js';
-import { AppleMusicService } from './services/applemusic.js';
 import { YouTubeService } from './services/youtube.js';
 import LofiStyle from './styles/lofi.js';
 import ImpressionistStyle from './styles/impressionist.js';
@@ -471,34 +470,6 @@ $('sp-play').addEventListener('click', async () => {
   try { await spotify.playLink($('sp-link').value); activeService = spotify; } catch (e) { setStatus(e.message, 'warn'); }
 });
 
-// ---- Apple Music -------------------------------------------------------------------------------
-const apple = new AppleMusicService({
-  developerToken: APPLE_MUSIC_DEVELOPER_TOKEN || store.get('appleToken') || '',
-  onTrack: (t) => setTrack(t, t ? apple : null),
-  onStatus: setStatus,
-  onState: () => renderApple(),
-});
-function renderApple() {
-  $('am-setup').hidden = apple.configured;
-  $('am-ready').hidden = !apple.configured;
-  $('am-signin').textContent = apple.authorized ? 'Sign out of Apple Music' : 'Sign in to Apple Music';
-  $('am-auth-note').textContent = apple.authorized ? 'Signed in: full tracks.' : '';
-}
-$('am-token-save').addEventListener('click', () => {
-  const t = $('am-token').value.trim();
-  if (t.split('.').length !== 3) { setStatus('That doesn\'t look like a MusicKit developer token (a JWT).', 'warn'); return; }
-  store.set('appleToken', t);
-  apple.developerToken = t;
-  apple.init().then(renderApple);
-  renderApple();
-});
-$('am-capture').addEventListener('click', () => run(() => audio.captureSystem()));
-$('am-signin').addEventListener('click', () => (apple.authorized ? apple.signOut() : apple.signIn()).catch((e) => setStatus('Apple Music: ' + e.message, 'warn')));
-$('am-play').addEventListener('click', async () => {
-  await listenTab();
-  try { await apple.playLink($('am-link').value); activeService = apple; } catch (e) { setStatus('Apple Music: ' + e.message, 'warn'); }
-});
-
 // ---- YouTube ---------------------------------------------------------------------------------
 const youtube = new YouTubeService({
   host: 'yt-player',
@@ -552,10 +523,8 @@ function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&am
 showTab(params.has('code') ? 'spotify' : (params.get('tab') || store.get('tab') || 'spotify'));
 sourceChanged();
 renderSpotify();
-renderApple();
 boot();
 spotify.init().catch((e) => setStatus('Spotify: ' + e.message, 'warn'));
-apple.init();
 // ?demo starts the demo loop at once (headless checks; browsers allow it when autoplay is permitted).
 if (params.has('demo')) audio.playDemo().then(() => { sourceChanged(); setTrack({ service: 'Demo', title: 'Demo loop', artist: 'Built-in lo-fi beat' }); }, () => {});
 // ?art=<image url> tints the styles from that image (for checking album-colour matching).

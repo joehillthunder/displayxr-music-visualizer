@@ -1,7 +1,7 @@
 // Audio input and analysis.
 //
-// One AudioContext for the life of the page. A source (this tab's audio while a Spotify, Apple
-// Music or YouTube player plays here, another tab or the whole PC, a microphone or line-in, a
+// One AudioContext for the life of the page. A source (this tab's audio while a Spotify or
+// YouTube player plays here, another tab or the whole PC, a microphone or line-in, a
 // local file, or the built-in demo loop) feeds a mono analyser plus a left/right pair. Each
 // animation frame, update() turns them into the features every style reads:
 //
@@ -116,7 +116,7 @@ export class AudioEngine {
   }
 
   /**
-   * This tab's own audio: what the in-page Spotify, Apple Music or YouTube player plays. Chrome
+   * This tab's own audio: what the in-page Spotify or YouTube player plays. Chrome
    * offers "this tab" as a one-click choice. Must be called from a click.
    */
   async captureThisTab() {
