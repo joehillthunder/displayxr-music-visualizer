@@ -53,6 +53,7 @@ export default class OrbStyle {
     this.layout = new Blend(LAYOUTS[0]);
     this.gyroYaw = 0;
     this.satT = 0;
+    this.poke = 0;          // a tap on the orb: an extra ripple that decays
 
     this.orbMat = new THREE.ShaderMaterial({
       uniforms: {
@@ -225,10 +226,11 @@ export default class OrbStyle {
     u.uTime.value = a.time;
     u.uBass.value = a.bass;
     u.uTreble.value = a.treble;
-    u.uBeat.value = a.beat;
+    this.poke *= Math.exp(-dt * 2.5);
+    u.uBeat.value = Math.max(a.beat, this.poke * 1.6);
     this.hue = (this.hue + dt * 0.02 + a.beat * 0.01) % 1;
     u.uHue.value = this.hue + a.centroid * 0.3;
-    this.orb.scale.setScalar(1 + a.beat * 0.05 + a.bass * 0.05);
+    this.orb.scale.setScalar(1 + a.beat * 0.05 + a.bass * 0.05 + this.poke * 0.08);
     this.orb.rotation.y += dt * (0.2 + a.mid * 0.8);
 
     const Lt = this.layout.update(dt, 0.7);
@@ -245,10 +247,13 @@ export default class OrbStyle {
     this.satT += dt * (0.6 + a.level * 0.8);
     for (const s of this.sats) {
       const { r, tilt, speed, phase } = s.userData;
-      const ang = this.satT * speed + phase;
+      // A tapped satellite gets a kick: it races ahead round its orbit, then settles.
+      s.userData.kick = (s.userData.kick || 0) * Math.exp(-dt * 1.2);
+      s.userData.extra = (s.userData.extra || 0) + dt * s.userData.kick * 9 * Math.sign(speed);
+      const ang = this.satT * speed + phase + s.userData.extra;
       const x = Math.cos(ang) * r, z0 = Math.sin(ang) * r;
       s.position.set(x, Math.sin(tilt) * z0 * 0.6, Lt.orbZ + Math.cos(tilt * 0.5) * z0 * 0.72);
-      s.scale.setScalar(1 + a.bass * 0.35 + a.beat * 0.2);
+      s.scale.setScalar(1 + a.bass * 0.35 + a.beat * 0.2 + s.userData.kick * 0.5);
     }
     for (let i = 0; i < BARS; i++) {
       const ang = (i / BARS) * Math.PI * 2;
@@ -277,18 +282,7 @@ export default class OrbStyle {
     this.haloMat.uniforms.uLevel.value = a.level;
 
     // Sparks: burst on a beat, fly out (biased toward you), slow down and fade.
-    if (a.beat > 0.95) {
-      const n = 40 + Math.floor(a.bass * 80);
-      for (let j = 0; j < n; j++) {
-        const i = this.next = (this.next + 1) % SPARKS;
-        const th = Math.random() * Math.PI * 2, ph = Math.acos(rand(-0.2, 1));
-        const dx = Math.sin(ph) * Math.cos(th), dy = Math.sin(ph) * Math.sin(th), dz = Math.cos(ph);
-        this.sp.set([dx * 0.032, dy * 0.032, this.orb.position.z + dz * 0.032], i * 3);
-        const sp = rand(0.03, 0.08) * (0.6 + a.bass);
-        this.sv.set([dx * sp, dy * sp, dz * sp], i * 3);
-        this.life[i] = 1;
-      }
-    }
+    if (a.beat > 0.95) this.throwSparks(a.bass);
     const drag = Math.exp(-dt * 2.2);
     for (let i = 0; i < SPARKS; i++) {
       if (this.life[i] <= 0) continue;
@@ -298,6 +292,45 @@ export default class OrbStyle {
     }
     this.sparks.geometry.attributes.position.needsUpdate = true;
     this.sparks.geometry.attributes.life.needsUpdate = true;
+  }
+
+  throwSparks(strength) {
+    const n = 40 + Math.floor(strength * 80);
+    for (let j = 0; j < n; j++) {
+      const i = this.next = (this.next + 1) % SPARKS;
+      const th = Math.random() * Math.PI * 2, ph = Math.acos(rand(-0.2, 1));
+      const dx = Math.sin(ph) * Math.cos(th), dy = Math.sin(ph) * Math.sin(th), dz = Math.cos(ph);
+      this.sp.set([dx * 0.032, dy * 0.032, this.orb.position.z + dz * 0.032], i * 3);
+      const sp = rand(0.03, 0.08) * (0.6 + strength);
+      this.sv.set([dx * sp, dy * sp, dz * sp], i * 3);
+      this.life[i] = 1;
+    }
+  }
+
+  // Interaction (js/interact.js): tap the orb to set it rippling and throwing sparks, or tap a
+  // chrome satellite to kick it round its orbit.
+  get cursorTargets() { return [this.orb, ...this.sats]; }
+
+  tap(ray, fx) {
+    const T = this.T, p = new T.Vector3(), s = new T.Vector3();
+    for (const sat of this.sats) {
+      sat.getWorldPosition(p);
+      sat.getWorldScale(s);
+      if (ray.distanceToPoint(p) < sat.geometry.parameters.radius * s.x + 0.004) {
+        sat.userData.kick = 1;
+        fx.burst(p, this.pal.color(1, new T.Color()), 0.8);
+        return true;
+      }
+    }
+    this.orb.getWorldPosition(p);
+    this.orb.getWorldScale(s);
+    if (ray.distanceToPoint(p) < 0.031 * s.x) {
+      this.poke = 1;
+      this.throwSparks(1.2);
+      fx.ring(p, this.pal.color(0, new T.Color()), 0.05, false);
+      return true;
+    }
+    return false;
   }
 
   beforeRender(vpH) {

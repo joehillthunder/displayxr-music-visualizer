@@ -15,6 +15,16 @@
 //                           buffer pixels (point sprites need it to size themselves in metres)
 //   dispose()
 //
+// Interaction (js/interact.js), all optional:
+//   targets                 Flyers pools the viewer can tap to pop and swipe to swat
+//   popped(pool, i, info)   called when the viewer has popped object i of a pool (already removed);
+//                           info = { x, y, z, size, color } in the pool's local space
+//   tap(ray, fx)            the viewer tapped and hit nothing poppable. `ray` is a world-space
+//                           THREE.Ray (fx.toLocal(ray, obj) converts it); return true if the style
+//                           reacted, otherwise the glass ripples where the tap landed
+//   hover(ray, dt)          each frame while the pointer is over the canvas (world-space ray)
+//   cursorTargets           meshes that count as content for the depth cursor
+//
 // Units are metres on a virtual display 0.12 m tall (main.js passes virtualDisplayHeight 0.12).
 // z = 0 is the glass: +z comes out toward the viewer, -z goes behind it. At 16:9 the visible
 // window at z = 0 is about 0.213 m x 0.12 m.
@@ -53,6 +63,19 @@ export const POINT_SIZE_GLSL = /* glsl */`
   uniform float uViewportH;
   float pointPx(float metres, vec4 mvPosition) {
     return metres * projectionMatrix[1][1] * 0.5 * uViewportH / max(0.001, -mvPosition.z);
+  }
+`;
+
+// Fade for points that come out of the glass: they shrink away near the window's edges (where
+// the frame would cut them off, a "window violation" that breaks the 3D) and before POP_MAX.
+// `p` is the point in the style's space (metres, z = 0 on the glass). Same rule as Flyers.
+export const EDGE_FADE_GLSL = /* glsl */`
+  float edgeFade(vec3 p) {
+    if (p.z <= 0.0) return 1.0;
+    float ex = clamp((0.1 - abs(p.x)) / 0.025, 0.0, 1.0);
+    float ey = clamp((0.056 - abs(p.y)) / 0.015, 0.0, 1.0);
+    float ez = 1.0 - clamp((p.z - 0.0375) / 0.0125, 0.0, 1.0);
+    return min(ex, ey) * ez;
   }
 `;
 
@@ -166,8 +189,59 @@ export class Flyers {
     this.pos = new THREE.Vector3();
     this.scl = new THREE.Vector3();
     this.c = new THREE.Color();
+    this.shown = new Float32Array(count);   // drawn scale as a share of size, for hit tests
+    this.tmp = new THREE.Vector3();
     this.m.makeScale(0, 0, 0);
     for (let i = 0; i < count; i++) { this.mesh.setMatrixAt(i, this.m); this.mesh.setColorAt(i, this.c.setRGB(0, 0, 0)); }
+  }
+
+  // ---- interaction (see js/interact.js) ----
+  // Rays are THREE.Rays in this mesh's local space; main.js converts the pointer ray for each pool.
+
+  /**
+   * The live object nearest along `ray` whose centre passes within its drawn radius plus `reach`
+   * of the ray (small things get a little extra so they can be hit), or -1.
+   */
+  hit(ray, reach = 0.004) {
+    let best = -1, bestT = Infinity;
+    for (let i = 0; i < this.n; i++) {
+      if (this.life[i] <= 0 || this.shown[i] < 0.15) continue;
+      const o = i * 3;
+      this.pos.set(this.p[o], this.p[o + 1], this.p[o + 2]);
+      const t = this.tmp.subVectors(this.pos, ray.origin).dot(ray.direction);
+      if (t <= 0 || t >= bestT) continue;
+      const r = this.size[i] * this.shown[i] + reach;
+      if (ray.distanceSqToPoint(this.pos) < r * r) { best = i; bestT = t; }
+    }
+    return best;
+  }
+
+  /** Remove object i at once and report where it was: { x, y, z, size, color }. */
+  pop(i) {
+    const o = i * 3;
+    const out = { x: this.p[o], y: this.p[o + 1], z: this.p[o + 2], size: this.size[i] * this.shown[i], color: this.col[i].clone() };
+    this.life[i] = 0;
+    this.shown[i] = 0;
+    this.m.makeScale(0, 0, 0);
+    this.mesh.setMatrixAt(i, this.m);
+    this.mesh.instanceMatrix.needsUpdate = true;
+    return out;
+  }
+
+  /** Swat: add velocity (vx, vy, vz) to every live object within `radius` of the ray, more near it. */
+  push(ray, vx, vy, vz, radius = 0.012) {
+    let n = 0;
+    for (let i = 0; i < this.n; i++) {
+      if (this.life[i] <= 0) continue;
+      const o = i * 3;
+      const d = Math.sqrt(ray.distanceSqToPoint(this.pos.set(this.p[o], this.p[o + 1], this.p[o + 2])));
+      if (d > radius) continue;
+      const k = 1 - d / radius;
+      this.v[o] += vx * k; this.v[o + 1] += vy * k; this.v[o + 2] += vz * k;
+      this.spin[o] += rand(-8, 8) * k; this.spin[o + 1] += rand(-8, 8) * k;
+      n++;
+    }
+    return n;
   }
 
   spawn(x, y, z, vx, vy, vz, { life = 1.5, size = 0.003, color = null, spin = 3, rot = null } = {}) {
@@ -187,7 +261,7 @@ export class Flyers {
   update(dt, brightness = 1) {
     const drag = Math.exp(-dt * this.drag);
     for (let i = 0; i < this.n; i++) {
-      if (this.life[i] <= 0) continue;
+      if (this.life[i] <= 0) { this.shown[i] = 0; continue; }
       this.life[i] -= dt;
       const o = i * 3;
       this.v[o + 1] -= this.gravity * dt;
@@ -209,6 +283,7 @@ export class Flyers {
       }
       const t = Math.max(0, this.life[i] / this.maxLife[i]);                   // 1 → 0 over the life
       const s = this.size[i] * Math.min(1, (1 - t) * 8) * Math.min(1, t * 3.5) * fade;
+      this.shown[i] = this.size[i] > 0 ? s / this.size[i] : 0;
       this.e.set(this.rot[o], this.rot[o + 1], this.rot[o + 2]);
       this.m.compose(this.pos.set(this.p[o], this.p[o + 1], z), this.q.setFromEuler(this.e), this.scl.set(s, s, s));
       this.mesh.setMatrixAt(i, this.m);

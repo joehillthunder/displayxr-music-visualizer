@@ -253,6 +253,9 @@ export default class ImpressionistStyle {
     this.petals.update(dt, 1);
   }
 
+  // Interaction (js/interact.js): the petals riding out toward you can be tapped and swatted.
+  get targets() { return [this.petals]; }
+
   beforeRender(vpH) { this.mat.uniforms.uViewportH.value = vpH; }
 
   dispose() { disposeTree(this.group); }

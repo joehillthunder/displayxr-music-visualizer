@@ -3,17 +3,19 @@
 A music visualizer with real depth on glasses-free 3D displays. It plays music from **Spotify** or
 **YouTube** inside the page, or follows anything else the PC plays. It's built on
 [DisplayXR](https://displayxr.org), so on a Leia SR display in the DisplayXR Browser the visuals
-come out of the screen and you can look around them. In any other browser it runs in 2D.
+come out of the screen and you can look around them. In any other browser it runs in 2D. Ten
+styles, three layouts each, and all of them interactive: turn the scene, pop what flies at you,
+and poke the scene to make it react.
 
 **Open it:** https://joehillthunder.github.io/displayxr-music-visualizer/
 
-| Lo-Fi Room | Impressionist Garden | Neon Horizon |
-|---|---|---|
-| ![Lo-Fi Room](assets/lofi.png) | ![Impressionist Garden](assets/impressionist.png) | ![Neon Horizon](assets/synthwave.png) |
+| Lo-Fi Room | Impressionist Garden | Neon Horizon | Cosmic Nebula | Liquid Orb |
+|---|---|---|---|---|
+| ![Lo-Fi Room](assets/lofi.png) | ![Impressionist Garden](assets/impressionist.png) | ![Neon Horizon](assets/synthwave.png) | ![Cosmic Nebula](assets/nebula.png) | ![Liquid Orb](assets/orb.png) |
 
-| Cosmic Nebula | Liquid Orb |
-|---|---|
-| ![Cosmic Nebula](assets/nebula.png) | ![Liquid Orb](assets/orb.png) |
+| Warp Tunnel | Fireworks | Deep Sea | Kaleidoscope | Aurora |
+|---|---|---|---|---|
+| ![Warp Tunnel](assets/tunnel.png) | ![Fireworks](assets/fireworks.png) | ![Deep Sea](assets/deepsea.png) | ![Kaleidoscope](assets/kaleidoscope.png) | ![Aurora](assets/aurora.png) |
 
 ## Music services
 
@@ -55,6 +57,36 @@ Apple Music isn't built in. To visualize it, play it in the Apple Music app or w
 | 3 | **Neon Horizon** | Synthwave grid landscape, a striped sun and a waveform laser | The left channel shapes the left mountains and the right channel the right ones, and they roll out of the screen toward you |
 | 4 | **Cosmic Nebula** | A 26,000-star spiral galaxy, bass in the core and highs in the arms, ringed by the live waveform | The tilted disc hangs behind the glass and leans toward the louder channel. Beats send a shockwave that lifts stars toward you |
 | 5 | **Liquid Orb** | Iridescent liquid chrome with studio reflections inside a ring of stereo spectrum bars | The orb sits in the glass, and the front of the ring and the beat sparks come out of the screen |
+| 6 | **Warp Tunnel** | Flying down a tunnel of spectrum rings, left channel on the left wall and right on the right | Rings stream out of the depths toward you, and energy orbs race down the bore and out of the glass |
+| 7 | **Fireworks** | Shells burst over a city skyline: peonies, rings that open toward you, chrysanthemums, gold willows | Bursts happen at every depth, the closest right in front of the glass |
+| 8 | **Deep Sea** | Glowing jellyfish with trailing tentacles, a fish school, plankton, light rays and bubbles | Jellyfish and the school move through the whole depth of the water, and bubbles drift out of the glass |
+| 9 | **Kaleidoscope** | Rings of faceted mirrored glass with n-fold symmetry over a mirrored backdrop | Small inner rings sit in front of the glass and wide outer rings recede, a cone you look into, with gems thrown at you |
+| 0 | **Aurora** | Curtains of northern lights over a snowy ridge, with snow and shooting stars | Curtains hang at different depths, snow falls in front of the glass, and shooting stars streak toward you |
+
+### Play with it
+
+Everything is interactive, with a mouse, a trackpad or touch:
+
+- **Drag** the picture to turn the whole scene in 3D. Flick it and it keeps turning. **Ctrl+scroll**
+  or **pinch** to zoom (plain scroll in full view). **Double-click** or **R** resets the view, and
+  left alone it eases back by itself.
+- **Tap anything flying at you** to pop it into shards with a shockwave, such as sparks, petals,
+  comets, orbs, rockets, bubbles, gems or shooting stars. **Swipe fast** to swat them aside. A pop
+  counter keeps score.
+- **Tap empty space** and each style reacts in its own way:
+
+| Style | Tap | Pointer |
+|---|---|---|
+| Liquid Orb | Tap the orb: it ripples and throws sparks. Tap a satellite: it races round its orbit | |
+| Warp Tunnel | Kicks the warp drive: a surge of speed and light | |
+| Fireworks | Fires a shell that bursts where you tapped. Tap a climbing rocket to detonate it early | Glitter trails the pointer |
+| Deep Sea | Tap a jellyfish: it flashes and jets away. Tap open water: the school bolts | The fish school follows the pointer, and plankton lights up around it |
+| Kaleidoscope | Changes the symmetry: 6, 8, 12, then 5 | Circling the pointer turns the kaleidoscope like twisting the tube |
+| Aurora | A magnetic storm: a wave of light runs along every curtain, and more stars fall | The curtains reach toward the pointer and brighten |
+| others | The glass ripples where you tap | |
+
+In 3D, the pointer is drawn at the depth of whatever it's over, so it never hides behind something
+that pops out.
 
 ### Layouts, pop-out and motion
 
@@ -68,6 +100,11 @@ beat every ~28 s (**Change on the beat**), or with `V` or the Layout buttons:
 | Neon Horizon | **Road** · **Flyover** · **Canyon** | Neon wireframe shapes that race down the road toward you on the beat; the waveform laser in front of the glass |
 | Cosmic Nebula | **Spiral** · **Face-on** (the core bulges out of the glass) · **Orbit** (the galaxy turns so its arms swing toward you) | Comets streaking out of the deep field on the beat; shockwave-lifted stars; near-field dust |
 | Liquid Orb | **Ring** · **Sunburst** (the bars shoot straight out of the screen) · **Gyro** (the ring precesses around the orb) | Chrome satellites orbiting in front of the glass and behind it; beat sparks |
+| Warp Tunnel | **Straight** · **Corkscrew** (the rings twist and the bore snakes) · **Hyperspace** (the bars stretch into streaks) | Energy orbs flying down the tunnel and out at you |
+| Fireworks | **Show** · **Willow** (slow, drooping gold) · **Finale** (rapid volleys, bigger shells) | The closest bursts, and the rockets you can tap |
+| Deep Sea | **Reef** · **Abyss** (nearly dark, lit by the creatures) · **Current** (everything streams sideways) | Bubbles, plankton and the jellyfish that drift near |
+| Kaleidoscope | **Mandala** · **Bloom** (shards tip toward you like petals) · **Vortex** (the rings spiral back into the screen) | Symmetric bursts of gems on the beat; the centre jewel |
+| Aurora | **Curtains** · **Corona** (looking straight up at rays converging overhead) · **Ribbons** (bands stacked in depth) | Snow and shooting stars; curtains reaching toward the pointer |
 
 Everything that comes out of the screen stops and fades about 5 cm in front of the glass (at the
 0.12 m virtual display scale) and shrinks near the window edges, where the frame would cut it
@@ -95,11 +132,11 @@ playing and fades every style to them.
 
 ## Controls
 
-`1`–`5` pick a style · `←` `→` previous/next · `V` next layout · `Space` play/pause · `A`
-auto-cycle styles (on a beat every ~40 s) · `F` full view · `Esc` exit.
+`1`–`9`, `0` pick a style · `←` `→` previous/next · `V` next layout · `R` reset the view ·
+`Space` play/pause · `A` auto-cycle styles (on a beat every ~40 s) · `F` full view · `Esc` exit.
 
-URL parameters: `?style=lofi|impressionist|synthwave|nebula|orb`, `?var=0|1|2` (layout),
-`?novary` (hold the layout), `?auto`,
+URL parameters: `?style=lofi|impressionist|synthwave|nebula|orb|tunnel|fireworks|deepsea|kaleidoscope|aurora`, `?var=0|1|2` (layout),
+`?novary` (hold the layout), `?warm=N` (run N frames before the first draw, for screenshots), `?auto`,
 `?quality=ultra|high|fast`, `?glow=0..2`, `?tab=spotify|youtube|more`, and `?demo`, which
 starts the demo loop at once.
 

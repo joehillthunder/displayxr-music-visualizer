@@ -262,6 +262,9 @@ export default class NebulaStyle {
     p.needsUpdate = true;
   }
 
+  // Interaction (js/interact.js): the comets streaking out of the deep field can be tapped and swatted.
+  get targets() { return [this.comets]; }
+
   beforeRender(vpH) {
     this.mat.uniforms.uViewportH.value = vpH;
     this.dustMat.uniforms.uViewportH.value = vpH;

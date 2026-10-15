@@ -267,6 +267,9 @@ export default class LofiStyle {
     this.rainMat.opacity = 0.18 + a.treble * 0.4;
   }
 
+  // Interaction (js/interact.js): the voxel sparks can be tapped and swatted.
+  get targets() { return [this.sparks]; }
+
   beforeRender(vpH) { this.dustMat.uniforms.uViewportH.value = vpH; }
 
   dispose() { disposeTree(this.group); }

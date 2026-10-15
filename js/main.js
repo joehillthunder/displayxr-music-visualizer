@@ -15,8 +15,9 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { createInline3D } from '@displayxr/inline3d';
-import { EyeCamera, EdgeFeather } from '@displayxr/inline3d/three';
+import { EyeCamera, EdgeFeather, DepthCursor, raycastHitTest } from '@displayxr/inline3d/three';
 import { AudioEngine } from './audio.js';
+import { Interaction } from './interact.js';
 import { paletteFromImage } from './palette.js';
 import { SPOTIFY_CLIENT_ID } from './config.js';
 import { SpotifyService } from './services/spotify.js';
@@ -26,8 +27,14 @@ import ImpressionistStyle from './styles/impressionist.js';
 import SynthwaveStyle from './styles/synthwave.js';
 import NebulaStyle from './styles/nebula.js';
 import OrbStyle from './styles/orb.js';
+import TunnelStyle from './styles/tunnel.js';
+import FireworksStyle from './styles/fireworks.js';
+import DeepSeaStyle from './styles/deepsea.js';
+import KaleidoscopeStyle from './styles/kaleidoscope.js';
+import AuroraStyle from './styles/aurora.js';
 
-const STYLES = [LofiStyle, ImpressionistStyle, SynthwaveStyle, NebulaStyle, OrbStyle];
+const STYLES = [LofiStyle, ImpressionistStyle, SynthwaveStyle, NebulaStyle, OrbStyle,
+  TunnelStyle, FireworksStyle, DeepSeaStyle, KaleidoscopeStyle, AuroraStyle];
 const VIRTUAL_DISPLAY_HEIGHT = 0.12;   // the scenes are authored in metres for a 12 cm-tall window
 const AUTO_SECONDS = 40;
 // Pure black: it survives any colour-space conversion (the composer clears with the value the
@@ -59,10 +66,13 @@ renderer.toneMapping = THREE.NoToneMapping;
 const scene = new THREE.Scene();
 const root = new THREE.Group();          // depth slider scales this along z
 scene.add(root);
+// The viewer's drag turns this and the zoom scales it (js/interact.js).
+const orbit = new THREE.Group();
+root.add(orbit);
 // Slow sway of the whole scene, so the depth keeps changing even when the music is quiet. It
 // moves the content, never the eyes: on a display rig the runtime owns the viewpoint.
 const drift = new THREE.Group();
-root.add(drift);
+orbit.add(drift);
 
 const eye = new EyeCamera(THREE);
 const feather = new EdgeFeather(THREE, { px: 28 });
@@ -156,6 +166,9 @@ function mountStyle(i) {
   setVariation(variation);
   // A new style starts already in its layout rather than blending in from the default.
   if (style.layout) Object.assign(style.layout.cur, style.layout.target);
+  // What the depth cursor rises over: the things that fly at you plus the style's solid shapes.
+  cursorTargets.length = 0;
+  cursorTargets.push(...(style.targets || []).map((p) => p.mesh), ...(style.cursorTargets || []));
   syncStyleButtons();
 }
 
@@ -199,6 +212,7 @@ function tick(dt) {
     d.yaw * (Math.sin(driftT * 0.09) * 0.7 + Math.sin(driftT * 0.053 + 0.4) * 0.3),
     0,
   );
+  interaction.update(dt);
   style.update(audio, dt);
   meterTick();
 }
@@ -263,10 +277,43 @@ function onXRFrame(views, layer) {
       eyes.push({ proj: Float32Array.from(v.projectionMatrix), xf: Float32Array.from(v.transform.matrix), vp: { x: vp.x, y: vp.y, width: vp.width, height: vp.height } });
     }
   }
-  if (ok) { lastGood = eyes; drawStereo(eyes); }
+  if (ok) {
+    cursor?.update(views, { layer });   // before drawing: it places the arrow for this frame
+    lastGood = eyes;
+    setPickCam(eyes);
+    drawStereo(eyes);
+  }
   else if (lastGood) drawStereo(lastGood);
   else drawMono();
 }
+
+// Picking in 3D: one camera at the midpoint between the eyes, with the first eye's frustum.
+// There is one pointer on one screen, so picking against an eye camera would be half an IPD off.
+const pickCam = new THREE.PerspectiveCamera();
+pickCam.matrixAutoUpdate = false;
+let havePickCam = false;
+const _a = new THREE.Matrix4(), _b = new THREE.Matrix4(), _pa = new THREE.Vector3(), _pb = new THREE.Vector3();
+function setPickCam(eyes) {
+  _a.fromArray(eyes[0].xf); _b.fromArray(eyes[eyes.length - 1].xf);
+  _pa.setFromMatrixPosition(_a).add(_pb.setFromMatrixPosition(_b)).multiplyScalar(0.5);
+  _a.setPosition(_pa);
+  pickCam.matrixWorld.copy(_a);
+  pickCam.matrixWorldInverse.copy(_a).invert();
+  pickCam.projectionMatrix.fromArray(eyes[0].proj);
+  pickCam.projectionMatrixInverse.copy(pickCam.projectionMatrix).invert();
+  havePickCam = true;
+}
+
+// ---- interaction ---------------------------------------------------------------------------------
+const cursorTargets = [];   // filled per style in mountStyle(); the depth cursor raycasts these
+let cursor = null;          // DepthCursor, in 3D only
+const popsEl = $('pops');
+const interaction = new Interaction(THREE, {
+  canvas, orbit, fxParent: drift,
+  getStyle: () => style,
+  getCamera: () => (sbs ? (havePickCam ? pickCam : null) : monoCam),
+  onPop: (n) => { popsEl.hidden = false; popsEl.textContent = `${n} popped`; },
+});
 
 // Gentle mouse parallax in 2D, so the depth still reads a little on a flat screen.
 const parallax = { x: 0, y: 0, tx: 0, ty: 0 };
@@ -314,17 +361,26 @@ new ResizeObserver(sizeCanvas).observe(canvas);
 // ---- boot ------------------------------------------------------------------------------------
 async function boot() {
   mountStyle(styleIndex);
+  // ?warm=N runs N frames of simulation before the first draw. Headless screenshots render only a
+  // handful of frames, too few for effects that build up (fireworks, flocks, trails).
+  for (let k = Math.min(600, +params.get('warm') || 0); k > 0; k--) tick(1 / 60);
   sizeCanvas();
 
   try { wall = await createInline3D({ lazy: false }); } catch (e) { console.warn('[visualizer] inline-3D unavailable', e); }
   if (wall?.supported) {
     sbs = true;
     sizeCanvas();
+    // The pointer rises in front of whatever comes out of the glass under it (the flyers, the
+    // orb), so it is never drawn behind something that pops out.
+    cursor = new DepthCursor(THREE, { canvas, hitTest: raycastHitTest(THREE, cursorTargets), raysPerFrame: 3 });
+    scene.add(cursor.object);
     handle = wall.addScene(canvas, onXRFrame, {
       virtualDisplayHeight: VIRTUAL_DISPLAY_HEIGHT,
       rectCover: 'auto',          // covers the canvas while full view resizes it
       onLayerLost: () => {        // fall back to flat rendering
-        sbs = false; lastGood = null; sizeCanvas(); requestAnimationFrame(onMonoFrame);
+        sbs = false; lastGood = null; havePickCam = false;
+        if (cursor) { scene.remove(cursor.object); cursor.dispose(); cursor = null; }
+        sizeCanvas(); requestAnimationFrame(onMonoFrame);
         setStatus('3D layer lost: showing 2D', 'warn');
       },
     });
@@ -357,7 +413,7 @@ for (const [i, S] of STYLES.entries()) {
   const b = document.createElement('button');
   b.className = 'chip';
   b.type = 'button';
-  b.innerHTML = `<span class="key">${i + 1}</span><span><b>${S.meta.name}</b><small>${S.meta.blurb}</small></span>`;
+  b.innerHTML = `<span class="key">${(i + 1) % 10}</span><span><b>${S.meta.name}</b><small>${S.meta.blurb}</small></span>`;
   b.addEventListener('click', () => { requestStyle(i); });
   styleBar.appendChild(b);
 }
@@ -558,7 +614,8 @@ $('exit-fill').addEventListener('click', () => setFill(false));
 
 addEventListener('keydown', (e) => {
   if (e.target.closest?.('input, select, textarea, button')) return;
-  if (e.key >= '1' && e.key <= String(STYLES.length)) requestStyle(+e.key - 1);
+  if (e.key >= '0' && e.key <= '9') { const i = (+e.key + 9) % 10; if (i < STYLES.length) requestStyle(i); }   // 1-9, then 0 for the tenth
+  else if (e.key === 'r' || e.key === 'R') interaction.reset();
   else if (e.key === 'ArrowRight') requestStyle(styleIndex + 1);
   else if (e.key === 'ArrowLeft') requestStyle(styleIndex - 1);
   else if (e.key === ' ') { e.preventDefault(); activeService?.toggle(); }

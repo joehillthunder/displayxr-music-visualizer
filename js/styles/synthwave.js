@@ -276,6 +276,9 @@ export default class SynthwaveStyle {
     for (const f of this.shapes) f.update(dt, 1);
   }
 
+  // Interaction (js/interact.js): the neon shapes racing down the road can be tapped and swatted.
+  get targets() { return this.shapes; }
+
   beforeRender(vpH) { this.starMat.uniforms.uViewportH.value = vpH; }
 
   dispose() { disposeTree(this.group); }
