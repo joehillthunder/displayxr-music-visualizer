@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>3D Music Visualizer</title>
-<meta name="description" content="A music visualizer with real depth on glasses-free 3D displays, built on DisplayXR. Captures the audio your PC is playing from any streaming app.">
+<meta name="description" content="A music visualizer with real depth on glasses-free 3D displays, built on DisplayXR. Plays Spotify, Apple Music and YouTube, or any audio on the PC.">
 <style>
   :root {
     color-scheme: dark;
-    --bg: #07060d;
+    --bg: #000000;
     --panel: #12101c;
     --line: #2a2640;
     --text: #ece9f7;
@@ -17,6 +17,9 @@
     --accent-2: #4fd8ff;
     --ok: #4ade80;
     --warn: #fbbf24;
+    --spotify: #1ed760;
+    --apple: #fa2d48;
+    --youtube: #ff3b30;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -37,23 +40,51 @@
   /* Cover until the first woven frame: on top, opaque, removed with a hard cut (rule 5). */
   #cover { position: absolute; inset: 0; background: var(--bg); display: grid; place-items: center; color: var(--muted); font-size: 14px; }
 
-  .panel { display: grid; gap: 18px; grid-template-columns: 1fr; margin-top: 18px; }
-  @media (min-width: 900px) { .panel { grid-template-columns: 1.1fr 1fr; } }
-  section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .panel { display: grid; gap: 18px; grid-template-columns: 1fr; margin-top: 18px; align-items: start; }
+  @media (min-width: 960px) { .panel { grid-template-columns: 1.15fr 1fr; } }
+  .col { display: grid; gap: 18px; }
+  section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  p.note { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+  p.note code { font-size: 12px; background: #221e36; padding: 1px 5px; border-radius: 4px; word-break: break-all; }
 
-  button, select, .filebtn { font: inherit; color: var(--text); background: #1c1930; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+  button, select, input[type=text], input[type=url], .filebtn { font: inherit; color: var(--text); background: #1c1930; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+  button, .filebtn { cursor: pointer; }
+  input[type=text], input[type=url] { flex: 1; min-width: 0; }
   button:hover, .filebtn:hover { border-color: #4a4470; }
   button:disabled { opacity: .45; cursor: default; }
   button.primary { background: linear-gradient(90deg, #b8327c, #2f86b3); border-color: transparent; font-weight: 600; }
+  button.spotify { background: var(--spotify); color: #04130a; border-color: transparent; font-weight: 700; }
+  button.apple { background: var(--apple); color: #fff; border-color: transparent; font-weight: 700; }
+  button.youtube { background: var(--youtube); color: #fff; border-color: transparent; font-weight: 700; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .row + .row { margin-top: 10px; }
+  .row + .row, .row + p, p + .row { margin-top: 10px; }
   select { max-width: 260px; }
   .filebtn input { display: none; }
-  .now { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 13px; color: var(--muted); min-height: 22px; }
+  [hidden] { display: none !important; }
+
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 0 -16px 12px; padding: 0 12px; overflow-x: auto; }
+  .tabs button { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 10px; color: var(--muted); white-space: nowrap; }
+  .tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+  .tabs button .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+
+  .now { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); min-height: 22px; }
   #meter { --l: 0; position: relative; width: 120px; height: 6px; border-radius: 3px; background: #241f38; overflow: hidden; flex: none; }
   #meter::after { content: ""; position: absolute; inset: 0; transform-origin: left; transform: scaleX(var(--l)); background: linear-gradient(90deg, var(--accent-2), var(--accent)); }
   #meter.beat { outline: 1px solid var(--accent); }
+  #bpm { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  #yt-wrap { margin-top: 10px; width: 356px; max-width: 100%; aspect-ratio: 356 / 200; background: #000; border-radius: 8px; overflow: hidden; }
+  #yt-wrap iframe { width: 100%; height: 100%; display: block; }
+
+  .track { display: grid; grid-template-columns: 84px 1fr; gap: 12px; align-items: center; }
+  .track img, .track .art-ph { width: 84px; height: 84px; border-radius: 8px; object-fit: cover; background: #221e36; }
+  .track .title { font-weight: 650; font-size: 16px; line-height: 1.25; overflow-wrap: anywhere; }
+  .track .artist { color: var(--muted); font-size: 13px; }
+  .track .svc { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-top: 2px; }
+  .swatches { display: flex; gap: 4px; margin-top: 6px; }
+  .swatches i { width: 16px; height: 16px; border-radius: 4px; }
+  .transport button { min-width: 44px; }
 
   #styles { display: grid; gap: 8px; grid-template-columns: 1fr; }
   @media (min-width: 560px) { #styles { grid-template-columns: 1fr 1fr; } }
@@ -75,12 +106,14 @@
   kbd { font: 12px ui-monospace, monospace; background: #221e36; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
   footer { margin-top: 26px; font-size: 13px; color: var(--muted); }
 
-  /* Fill window: the stage takes the whole viewport. A plain tint button, no backdrop-filter
+  /* Full view: the stage takes the whole viewport. A plain tint button, no backdrop-filter
      (rule 10), marked as an overlay for browsers without draw-order occlusion (rule 8). */
   #exit-fill { display: none; position: fixed; top: 12px; right: 12px; z-index: 10; background: rgba(0, 0, 0, .55); }
   body.fill { overflow: hidden; }
   body.fill .wrap { max-width: none; padding: 0; }
-  body.fill header, body.fill .panel, body.fill details, body.fill footer { display: none; }
+  body.fill header, body.fill details, body.fill footer { display: none; }
+  /* The panel stays in the DOM (the YouTube player must keep running) but is moved off screen. */
+  body.fill .panel { position: fixed; left: -10000px; top: 0; width: 900px; }
   body.fill #stage { width: 100vw; height: 100vh; aspect-ratio: auto; }
   body.fill #exit-fill { display: block; }
 </style>
@@ -99,20 +132,104 @@
   <button id="exit-fill" type="button" data-inline3d-overlay>Exit full view (Esc)</button>
 
   <div class="panel">
-    <section class="card">
-      <h2>Music source</h2>
-      <div class="row">
-        <button id="src-system" class="primary" type="button" title="Capture what this PC is playing: Spotify, Apple Music, YouTube, Tidal, a Bluetooth or AirPlay receiver…">Capture PC audio</button>
-        <button id="src-demo" type="button">Demo loop</button>
-        <label class="filebtn">Open file…<input id="file" type="file" accept="audio/*"></label>
-        <button id="stop" type="button" disabled>Stop</button>
-      </div>
-      <div class="row">
-        <button id="src-input" type="button">Use input</button>
-        <select id="devices" aria-label="Audio input device"><option value="">Default input</option></select>
-      </div>
-      <div class="now"><div id="meter" aria-hidden="true"></div><span id="source-label"></span></div>
-    </section>
+    <div class="col">
+      <section class="card" id="music">
+        <div class="tabs" role="tablist">
+          <button role="tab" data-tab="spotify" aria-selected="true"><span class="dot" style="background:var(--spotify)"></span>Spotify</button>
+          <button role="tab" data-tab="apple" aria-selected="false"><span class="dot" style="background:var(--apple)"></span>Apple Music</button>
+          <button role="tab" data-tab="youtube" aria-selected="false"><span class="dot" style="background:var(--youtube)"></span>YouTube</button>
+          <button role="tab" data-tab="more" aria-selected="false">Other sources</button>
+        </div>
+
+        <!-- Spotify -->
+        <div data-pane="spotify">
+          <div id="sp-setup" hidden>
+            <p class="note" style="margin-top:0">Spotify needs a free developer app (one-time, about two minutes):
+              open the <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify developer dashboard</a>, create an app,
+              add <code id="sp-redirect"></code> as a Redirect URI, tick <b>Web API</b> and <b>Web Playback SDK</b>, then paste its Client ID here.</p>
+            <div class="row"><input id="sp-client" type="text" placeholder="Spotify Client ID" autocomplete="off" spellcheck="false"><button id="sp-client-save" type="button">Save</button></div>
+          </div>
+          <div id="sp-out" hidden>
+            <div class="row"><button id="sp-connect" class="spotify" type="button">Connect Spotify</button></div>
+            <p class="note">The visualizer becomes a Spotify Connect speaker, so you can pick songs from the Spotify app on your phone. In-page playback needs Spotify Premium.</p>
+          </div>
+          <div id="sp-in" hidden>
+            <div class="row">
+              <button id="sp-here" class="spotify" type="button">Play here &amp; listen</button>
+              <button id="sp-listen-pc" type="button" title="For Spotify playing in the desktop app or another tab on this PC">Listen to PC audio</button>
+            </div>
+            <div class="row"><input id="sp-link" type="url" placeholder="Paste a Spotify link: track, album, playlist" spellcheck="false"><button id="sp-play" type="button">Play</button></div>
+            <p class="note" id="sp-note"></p>
+            <div class="row"><button id="sp-out-btn" type="button">Disconnect</button></div>
+          </div>
+        </div>
+
+        <!-- Apple Music -->
+        <div data-pane="apple" hidden>
+          <div id="am-setup" hidden>
+            <p class="note" style="margin-top:0">To play Apple Music inside the visualizer, paste a MusicKit developer token (it needs an Apple Developer Program account; see the README).
+              Or use the Apple Music web player in another tab and capture that tab.</p>
+            <div class="row"><input id="am-token" type="text" placeholder="MusicKit developer token" autocomplete="off" spellcheck="false"><button id="am-token-save" type="button">Save</button></div>
+            <div class="row">
+              <a class="filebtn" href="https://music.apple.com/" target="_blank" rel="noopener" style="text-decoration:none;color:var(--text)">Open Apple Music web player ↗</a>
+              <button id="am-capture" type="button">Capture that tab</button>
+            </div>
+          </div>
+          <div id="am-ready" hidden>
+            <div class="row"><button id="am-signin" class="apple" type="button">Sign in to Apple Music</button><span class="note" id="am-auth-note" style="margin:0"></span></div>
+            <div class="row"><input id="am-link" type="url" placeholder="Paste a music.apple.com link: song, album, playlist" spellcheck="false"><button id="am-play" class="apple" type="button">Play &amp; listen</button></div>
+            <p class="note">Without signing in, Apple Music plays 30-second previews.</p>
+          </div>
+        </div>
+
+        <!-- YouTube -->
+        <div data-pane="youtube" hidden>
+          <div class="row"><input id="yt-link" type="url" placeholder="Paste a YouTube or YouTube Music link" spellcheck="false"><button id="yt-play" class="youtube" type="button">Play &amp; listen</button></div>
+          <div id="yt-wrap" hidden><div id="yt-player"></div></div>
+          <div class="row"><button id="yt-listen" type="button">Listen to this tab</button></div>
+          <p class="note">Video and playlist links both work. Some videos don't allow embedding.</p>
+        </div>
+
+        <!-- Other sources -->
+        <div data-pane="more" hidden>
+          <div class="row">
+            <button id="src-system" class="primary" type="button" title="Capture what this PC is playing: any app, any tab, a Bluetooth or AirPlay receiver">Capture PC audio</button>
+            <button id="src-demo" type="button">Demo loop</button>
+            <label class="filebtn">Open file…<input id="file" type="file" accept="audio/*"></label>
+          </div>
+          <div class="row">
+            <button id="src-input" type="button">Use input</button>
+            <select id="devices" aria-label="Audio input device"><option value="">Default input</option></select>
+          </div>
+          <p class="note">Capture PC audio: choose <b>Entire screen</b> and turn on <b>Share system audio</b>. A phone can stream to this PC over Bluetooth or AirPlay, or plug into the line-in.</p>
+        </div>
+
+        <div class="now">
+          <div id="meter" aria-hidden="true"></div><span id="source-label"></span>
+          <span id="bpm"></span>
+          <button id="stop" type="button" disabled style="padding:4px 10px">Stop</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Now playing</h2>
+        <div class="track">
+          <img id="art" alt="" hidden><div class="art-ph" id="art-ph"></div>
+          <div>
+            <div class="title" id="np-title">Nothing yet</div>
+            <div class="artist" id="np-artist">Connect a service or pick a source.</div>
+            <div class="svc" id="np-svc"></div>
+            <div class="swatches" id="swatches"></div>
+          </div>
+        </div>
+        <div class="row transport" style="margin-top:12px">
+          <button id="np-prev" type="button" aria-label="Previous">⏮</button>
+          <button id="np-toggle" type="button" aria-label="Play or pause">⏯</button>
+          <button id="np-next" type="button" aria-label="Next">⏭</button>
+          <label class="toggle" style="margin-left:auto"><input id="match-art" type="checkbox" checked> Match colours to album art</label>
+        </div>
+      </section>
+    </div>
 
     <section class="card">
       <h2>Style</h2>
@@ -124,20 +241,27 @@
       <div style="margin-top:12px">
         <label class="slider">Sensitivity <input id="sensitivity" type="range" min="0.4" max="2.5" step="0.05" value="1"></label>
         <label class="slider">Depth <input id="depth" type="range" min="0.2" max="1.6" step="0.05" value="1"></label>
+        <label class="slider">Glow <input id="glow" type="range" min="0" max="2" step="0.05" value="1"></label>
+        <label class="slider">Quality
+          <select id="quality">
+            <option value="ultra">Ultra: bloom + 4x anti-aliasing</option>
+            <option value="high">High: bloom + 2x anti-aliasing</option>
+            <option value="fast">Fast: no post-processing</option>
+          </select>
+        </label>
       </div>
     </section>
   </div>
 
   <details>
-    <summary>How to visualize music from Spotify, Apple Music, YouTube, or your phone</summary>
+    <summary>How the music gets in, and privacy</summary>
     <ul>
-      <li><b>Music playing on this PC</b> (any app or browser tab): click <b>Capture PC audio</b>, choose <b>Entire screen</b>, and turn on <b>Share system audio</b>. To follow one browser tab only, pick that tab and turn on <b>Share tab audio</b>.</li>
-      <li><b>Music on your phone or another device</b>: stream it to this PC over Bluetooth (Windows can act as a Bluetooth speaker), AirPlay or Spotify Connect, then use <b>Capture PC audio</b>. Or plug the device into the line-in, pick it from the list, and click <b>Use input</b>.</li>
-      <li><b>A room or a live set</b>: pick a microphone and click <b>Use input</b>.</li>
-      <li><b>No music handy</b>: <b>Demo loop</b> plays a built-in lo-fi beat.</li>
+      <li><b>Spotify, Apple Music, YouTube:</b> the music plays inside this page. Their audio is protected, so the page can't read it directly; instead it listens to its own tab. When Chrome asks, pick <b>This tab</b> and keep <b>Share tab audio</b> on. It's one click per session.</li>
+      <li><b>Spotify from your phone:</b> after connecting, open Spotify on the phone, tap the speaker icon and choose <b>3D Music Visualizer</b>, then press <b>Play here &amp; listen</b> (or just Listen) on this page.</li>
+      <li><b>Any other app:</b> <b>Other sources → Capture PC audio</b> with "Share system audio" on.</li>
     </ul>
-    <p>Keys: <kbd>1</kbd>–<kbd>5</kbd> styles · <kbd>←</kbd> <kbd>→</kbd> previous/next · <kbd>A</kbd> auto-cycle · <kbd>F</kbd> full view · <kbd>Esc</kbd> exit.
-       Captured audio is only analyzed in this page. Nothing is recorded or uploaded.</p>
+    <p>Keys: <kbd>1</kbd>–<kbd>5</kbd> styles · <kbd>←</kbd> <kbd>→</kbd> previous/next · <kbd>Space</kbd> play/pause · <kbd>A</kbd> auto-cycle · <kbd>F</kbd> full view · <kbd>Esc</kbd> exit.
+       Audio is only analyzed in this page. Nothing is recorded or uploaded. Service sign-ins stay in this browser.</p>
   </details>
 
   <footer>
@@ -149,6 +273,7 @@
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/",
   "@displayxr/inline3d": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.45.1/js/inline3d.js",
   "@displayxr/inline3d/three": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.45.1/js/inline3d-three.js"
 } }

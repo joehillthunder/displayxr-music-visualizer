@@ -1,10 +1,9 @@
 # 3D Music Visualizer
 
-A music visualizer with real depth on glasses-free 3D displays. It reacts to whatever you're
-listening to: Spotify, Apple Music, YouTube, Tidal, a phone streaming over Bluetooth, or a mic in
-the room. It's built on [DisplayXR](https://displayxr.org), so on a Leia SR display in the DisplayXR
-Browser the visuals come out of the screen and you can look around them. In any other browser it
-runs in 2D.
+A music visualizer with real depth on glasses-free 3D displays. It plays music from **Spotify**,
+**Apple Music** or **YouTube** inside the page, or follows anything else the PC plays. It's built on
+[DisplayXR](https://displayxr.org), so on a Leia SR display in the DisplayXR Browser the visuals
+come out of the screen and you can look around them. In any other browser it runs in 2D.
 
 **Open it:** https://joehillthunder.github.io/displayxr-music-visualizer/
 
@@ -16,71 +15,107 @@ runs in 2D.
 |---|---|
 | ![Cosmic Nebula](assets/nebula.png) | ![Liquid Orb](assets/orb.png) |
 
+## Music services
+
+| Service | What you get | What it needs |
+|---|---|---|
+| **Spotify** | Sign in; the page becomes a Spotify Connect speaker called "3D Music Visualizer" (pick it from the Spotify app on your phone); paste links; now playing, album art, play/pause/skip | A Spotify app client ID (below). In-page playback needs **Premium**; on Free, play in the Spotify app and use Listen to PC audio, and now playing still follows along |
+| **Apple Music** | Paste a song, album or playlist link and it plays in the page; sign in for full tracks (30-second previews otherwise); now playing and album art | A MusicKit developer token (below). Without one, use the Apple Music web player in another tab and capture that tab |
+| **YouTube / YouTube Music** | Paste a video or playlist link; the player sits in the page; title and thumbnail | Nothing |
+| **Anything else** | Capture PC audio (any app, a Bluetooth or AirPlay receiver), a microphone or line-in, a local file, or the built-in demo loop | Nothing |
+
+**Why the page "listens to this tab".** Spotify and Apple Music protect their audio with DRM, and
+the YouTube player runs in a locked cross-origin frame, so no web page can read their audio
+directly. Spotify has also closed its audio-analysis API to new apps. So the page plays the
+music itself and then captures its own tab's audio for analysis. When Chrome asks, pick **This
+tab** and keep **Share tab audio** on. That's one click per session. The audio is only analyzed
+in the page and is never recorded or uploaded.
+
+### Setting up Spotify (one time)
+
+1. Open the [Spotify developer dashboard](https://developer.spotify.com/dashboard) and create an app.
+2. Add the Redirect URI `https://joehillthunder.github.io/displayxr-music-visualizer/`. The page
+   shows the exact URI to copy. For local testing, also add `http://127.0.0.1:<port>/`.
+3. Under APIs, tick **Web API** and **Web Playback SDK**.
+4. Put the app's Client ID in `js/config.js` (`SPOTIFY_CLIENT_ID`), or paste it into the Spotify
+   tab of the page, which keeps it in that browser only.
+5. While the app is in development mode, add each listener's Spotify account under
+   **User Management** in the dashboard.
+
+The client ID isn't a secret: sign-in uses PKCE, so there's no client secret and no server.
+
+### Setting up Apple Music (optional)
+
+MusicKit needs a developer token: a JWT signed with a MusicKit key from an Apple Developer
+Program account
+([Apple's guide](https://developer.apple.com/documentation/applemusicapi/generating-developer-tokens)).
+Restrict it to this site's origin, then put it in `js/config.js` (`APPLE_MUSIC_DEVELOPER_TOKEN`) or
+paste it into the Apple Music tab.
+
 ## Styles
 
 | # | Style | What it looks like | How it uses depth |
 |---|---|---|---|
-| 1 | **Lo-Fi Room** | Chunky voxel spectrogram in a muted sunset palette, with a low-poly moon and pixel dust | The newest spectrum row sits at the glass and older rows scroll back into the screen |
-| 2 | **Impressionist Garden** | Thousands of painted brushstrokes that follow a flow field, swell with the bass and catch gold light on the highs | Strokes sit in layers, from hazy water far behind the glass to a few dabs in front of it. Each beat sends a ripple out toward you |
-| 3 | **Neon Horizon** | Synthwave grid landscape under a striped sun | Mountains shaped by the spectrum roll out of the screen toward you |
-| 4 | **Cosmic Nebula** | A spiral galaxy: bass in the core, highs in the outer arms | The tilted disc hangs behind the glass. Beats send a shockwave that lifts stars toward you, and near-field dust drifts past |
-| 5 | **Liquid Orb** | Iridescent liquid-metal sphere inside a ring of spectrum bars | The orb sits in the glass and the front of the ring comes out of the screen |
+| 1 | **Lo-Fi Room** | A voxel spectrogram with glowing LED caps, a low-poly moon, rain on the glass and drifting dust | The newest spectrum row sits at the glass and older rows scroll back into the screen. Rain falls on a pane in front of the glass |
+| 2 | **Impressionist Garden** | 15,000 brushstrokes shaded like thick paint, following a flow field over a moving painted reflection | Strokes sit in layers, from hazy water far behind the glass to a few dabs in front. Each beat sends a ripple toward you from the louder stereo side |
+| 3 | **Neon Horizon** | Synthwave grid landscape, a striped sun and a waveform laser | The left channel shapes the left mountains and the right channel the right ones, and they roll out of the screen toward you |
+| 4 | **Cosmic Nebula** | A 26,000-star spiral galaxy, bass in the core and highs in the arms, ringed by the live waveform | The tilted disc hangs behind the glass and leans toward the louder channel. Beats send a shockwave that lifts stars toward you |
+| 5 | **Liquid Orb** | Iridescent liquid chrome with studio reflections inside a ring of stereo spectrum bars | The orb sits in the glass, and the front of the ring and the beat sparks come out of the screen |
 
-Other styles that would work well in 3D: a kaleidoscope tunnel, a particle waveform ribbon, a
-watercolour bloom, and a city skyline equalizer.
+**Match colours to album art** (on by default) pulls five colours from the cover of whatever is
+playing and fades every style to them.
 
-## Getting music in
+## Rendering and analysis
 
-The page analyzes audio on the PC it's running on. It never records or uploads anything.
-
-- **Capture PC audio** (the main way): click it, choose **Entire screen**, and turn on
-  **Share system audio**. Anything the PC plays then drives the visuals, whether that's the
-  Spotify app, a YouTube tab or a Bluetooth/AirPlay receiver app. To follow a single browser tab,
-  share that tab and turn on **Share tab audio**.
-- **Phone or another device:** stream to the PC over Bluetooth, AirPlay or Spotify Connect, then
-  use Capture PC audio. Or cable it into the line-in, pick the input and click **Use input**.
-- **Microphone:** pick it and click **Use input**. Good for a live set.
-- **Open file / drag and drop:** plays a local audio file.
-- **Demo loop:** a built-in synthesized lo-fi beat, for when no music is handy.
+- **Per-eye post-processing:** each eye renders into a 4x multisampled HDR target, then goes
+  through bloom and an output pass into its half of the side-by-side canvas. The Quality menu
+  sets this: Ultra (4x MSAA), High (2x) or Fast (none). The **Glow** slider scales the bloom.
+- **Audio:** an 8192-point FFT reduced to 128 log-spaced bands (25 Hz to 18 kHz) with fast attack
+  and slower release; a left/right analyser pair for stereo placement; the time-domain waveform;
+  onset detection from low-weighted spectral flux; and a tempo (BPM) estimate from the onset
+  intervals. Slow auto-gain keeps quiet and loud sources in range.
 
 ## Controls
 
-`1`–`5` pick a style · `←` `→` previous/next · `A` auto-cycle (changes style on a beat every
-~40 s) · `F` full view · `Esc` exit.
+`1`–`5` pick a style · `←` `→` previous/next · `Space` play/pause · `A` auto-cycle (changes
+style on a beat every ~40 s) · `F` full view · `Esc` exit.
 
-**Sensitivity** scales the input level (there's also slow auto-gain). **Depth** scales how far the
-scene reaches in and out of the screen.
-
-URL parameters: `?style=lofi|impressionist|synthwave|nebula|orb`, `?auto`.
+URL parameters: `?style=lofi|impressionist|synthwave|nebula|orb`, `?auto`,
+`?quality=ultra|high|fast`, `?glow=0..2`, `?tab=spotify|apple|youtube|more`, and `?demo`, which
+starts the demo loop at once.
 
 ## Hardware
 
 - **For 3D:** a Leia SR glasses-free 3D display on Windows, running the
   [DisplayXR Browser](https://displayxr.org/browser).
-- **Anywhere else:** any modern desktop browser shows it in 2D, with slight mouse parallax. System
-  audio capture needs a Chromium browser (Chrome or Edge) on Windows or ChromeOS. On macOS,
-  share a tab or use an input.
+- **Anywhere else:** any modern desktop browser shows it in 2D, with slight mouse parallax.
+  Capturing tab or PC audio needs a Chromium browser (Chrome or Edge) on Windows or ChromeOS.
+- Spotify's and Apple's in-page players need a browser with Widevine DRM. If the DisplayXR Browser
+  build doesn't include it, play in the Spotify or Apple Music app and use **Capture PC audio**;
+  Spotify's now-playing card and controls still work.
 
 ## How it works
 
-- Plain ES modules with no build step: [three.js](https://threejs.org) 0.161 and
-  [`@displayxr/inline3d`](https://www.npmjs.com/package/@displayxr/inline3d) 1.45.1, pinned from
-  jsDelivr through an import map.
-- `js/audio.js`: Web Audio capture and analysis. It reduces a 4096-point FFT to 64 log-spaced
-  bands, bass/mid/treble energy, spectral centroid and an adaptive beat detector. It also holds
-  the demo synth.
-- `js/main.js`: one persistent woven canvas (`createInline3D` + `addScene`). Each frame the scene
-  renders once per eye from the session's views, at a 0.12 m virtual display height. It follows
-  the DisplayXR [woven-canvas rules](https://github.com/DisplayXR/displayxr-web/blob/main/docs/woven-canvas-rules.md):
+- Plain ES modules with no build step: [three.js](https://threejs.org) 0.161 (with its
+  post-processing add-ons) and [`@displayxr/inline3d`](https://www.npmjs.com/package/@displayxr/inline3d)
+  1.45.1, pinned from jsDelivr through an import map.
+- `js/main.js`: one persistent woven canvas (`createInline3D` + `addScene`) that renders each
+  eye at a 0.12 m virtual display height. It follows the DisplayXR
+  [woven-canvas rules](https://github.com/DisplayXR/displayxr-web/blob/main/docs/woven-canvas-rules.md):
   it never remounts the canvas, covers it until `firstWoven`, validates views before clearing and
-  replays the last good frame, clamps the SBS buffer size, uses `rectCover` for full view, and
-  puts no CSS effects on the canvas. Styles change inside the canvas with a fade through black.
+  replays the last good frame, clamps the SBS buffer size, uses `rectCover` for full view, and puts
+  no CSS effects on the canvas.
+- `js/audio.js`: capture and analysis, plus the demo synth. `js/palette.js`: album-art palette
+  extraction.
+- `js/services/`: Spotify (PKCE sign-in, Web Playback SDK, Web API), Apple Music (MusicKit JS v3)
+  and YouTube (IFrame API). `js/config.js` holds the optional credentials.
 - `js/styles/*.js`: one file per style, all with the same small interface (see
   `js/styles/common.js`). Each is authored in metres around the z = 0 glass plane, where +z is
-  toward the viewer. Adding a style means adding a file and listing it in `STYLES` in `main.js`.
+  toward the viewer. Shader colours are authored in sRGB and converted to linear, so they match
+  with and without post-processing. Adding a style means adding a file and listing it in
+  `STYLES` in `main.js`.
 
-Run it locally by serving the folder with any static server (for example
-`npx serve .`) and opening it in a browser.
+Run it locally by serving the folder with any static server and opening it in a browser.
 
 ## License
 

@@ -5,12 +5,23 @@
 // we render the current style twice, once per eye, from the views the session hands us. In any
 // other browser the same scene renders once, flat.
 //
-// Styles are swapped INSIDE the canvas (a quick fade through black), never by replacing it.
+// Each eye goes through a post-processing chain (multisampled HDR render, bloom, output) sized
+// to that eye's viewport, and the result lands in the eye's half of the canvas. Styles are
+// swapped INSIDE the canvas (a quick fade through black), never by replacing it.
 
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { createInline3D } from '@displayxr/inline3d';
 import { EyeCamera, EdgeFeather } from '@displayxr/inline3d/three';
 import { AudioEngine } from './audio.js';
+import { paletteFromImage } from './palette.js';
+import { SPOTIFY_CLIENT_ID, APPLE_MUSIC_DEVELOPER_TOKEN } from './config.js';
+import { SpotifyService } from './services/spotify.js';
+import { AppleMusicService } from './services/applemusic.js';
+import { YouTubeService } from './services/youtube.js';
 import LofiStyle from './styles/lofi.js';
 import ImpressionistStyle from './styles/impressionist.js';
 import SynthwaveStyle from './styles/synthwave.js';
@@ -20,12 +31,19 @@ import OrbStyle from './styles/orb.js';
 const STYLES = [LofiStyle, ImpressionistStyle, SynthwaveStyle, NebulaStyle, OrbStyle];
 const VIRTUAL_DISPLAY_HEIGHT = 0.12;   // the scenes are authored in metres for a 12 cm-tall window
 const AUTO_SECONDS = 40;
+// Pure black: it survives any colour-space conversion (the composer clears with the value the
+// last on-screen draw left behind, which is already sRGB) and it is what a 3D panel shows best.
+const BG = 0x000000;
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('stage');
 const cover = $('cover');
 const statusEl = $('status');
 const params = new URLSearchParams(location.search);
+const store = {
+  get(k) { try { return localStorage.getItem('dxr-viz.' + k); } catch { return null; } },
+  set(k, v) { try { v == null ? localStorage.removeItem('dxr-viz.' + k) : localStorage.setItem('dxr-viz.' + k, v); } catch {} },
+};
 
 // ---- renderer --------------------------------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({
@@ -33,10 +51,11 @@ const renderer = new THREE.WebGLRenderer({
 });
 // Opaque clear in the page colour: additive styles then glow against a solid backdrop rather
 // than punching alpha holes in a transparent canvas. EdgeFeather still fades the edges out.
-renderer.setClearColor(0x07060d, 1);
+renderer.setClearColor(BG, 1);
 renderer.setPixelRatio(1);              // getViewport() is in buffer pixels; see hello-cube
 renderer.autoClear = false;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;
 
 const scene = new THREE.Scene();
 const root = new THREE.Group();          // depth slider scales this along z
@@ -58,6 +77,48 @@ fadeQuad.frustumCulled = false;
 fadeScene.add(fadeQuad);
 const fadeCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
+// ---- post-processing (per eye) -----------------------------------------------------------------
+// One composer, sized to an eye's viewport. Both eyes are the same size, so it is rebuilt only
+// when the canvas or the quality changes. Its last pass draws to the screen inside whatever
+// viewport and scissor are set, i.e. into the current eye's half.
+const QUALITY = { ultra: { samples: 4 }, high: { samples: 2 }, fast: null };
+let quality = params.get('quality') in QUALITY ? params.get('quality') : (store.get('quality') in QUALITY ? store.get('quality') : 'ultra');
+let glow = params.has('glow') ? Math.max(0, +params.get('glow') || 0) : 1;
+let composer = null, renderPass = null, bloomPass = null, composerSize = '';
+
+function buildComposer(w, h) {
+  composer?.dispose?.();
+  composer = null;
+  const q = QUALITY[quality];
+  if (!q) return;
+  const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: q.samples });
+  composer = new EffectComposer(renderer, rt);
+  composer.setPixelRatio(1);
+  renderPass = new RenderPass(scene, monoCam);
+  bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 1, 0.5, 0.6);
+  composer.addPass(renderPass);
+  composer.addPass(bloomPass);
+  composer.addPass(new OutputPass());
+  composer.setSize(w, h);
+  applyBloom();
+}
+
+function applyBloom() {
+  if (!bloomPass || !style) return;
+  const b = style.constructor.bloom || { strength: 0.6, radius: 0.5, threshold: 0.7 };
+  bloomPass.strength = b.strength * glow;
+  bloomPass.radius = b.radius;
+  bloomPass.threshold = b.threshold;
+  bloomPass.enabled = glow > 0.01;
+}
+
+function ensureComposer(w, h) {
+  const key = `${w}x${h}:${quality}`;
+  if (key === composerSize) return;
+  composerSize = key;
+  buildComposer(w, h);
+}
+
 // ---- state -----------------------------------------------------------------------------------
 const audio = new AudioEngine();
 let style = null;
@@ -70,12 +131,16 @@ let sbs = false;               // true once the inline-3D window is live
 let wall = null, handle = null;
 let last = 0;
 let lastGood = null;           // [{ proj, xf, vp }] copies from the last valid stereo frame
+let artPalette = null;         // album-art colours, sRGB triples
+let matchArt = true;
 
 function mountStyle(i) {
   if (style) { root.remove(style.group); style.dispose(); }
   styleIndex = i;
   style = new STYLES[i](THREE);
   root.add(style.group);
+  if (matchArt && artPalette) style.setPalette?.(artPalette);
+  applyBloom();
   autoClock = 0;
   syncStyleButtons();
 }
@@ -109,22 +174,32 @@ function drawEye(cam, vp) {
   renderer.setViewport(vp.x, vp.y, vp.width, vp.height);
   renderer.setScissor(vp.x, vp.y, vp.width, vp.height);
   style.beforeRender?.(vp.height);
-  renderer.render(scene, cam);
+  if (QUALITY[quality]) {
+    ensureComposer(Math.round(vp.width), Math.round(vp.height));
+    renderPass.camera = cam;
+    composer.render();
+  } else {
+    renderer.render(scene, cam);
+  }
   if (fade > 0.001) renderer.render(fadeScene, fadeCam);
   feather.render(renderer, vp);
 }
 
 function drawStereo(eyes) {
-  renderer.clear();
   renderer.setScissorTest(true);
+  renderer.setViewport(0, 0, canvas.width, canvas.height);
+  renderer.setScissor(0, 0, canvas.width, canvas.height);
+  renderer.clear();
   for (const e of eyes) drawEye(eye.setFromMatrices(e.proj, e.xf), e.vp);
   renderer.setScissorTest(false);
 }
 
 function drawMono() {
-  const w = renderer.domElement.width, h = renderer.domElement.height;
-  renderer.clear();
+  const w = canvas.width, h = canvas.height;
   renderer.setScissorTest(true);
+  renderer.setViewport(0, 0, w, h);
+  renderer.setScissor(0, 0, w, h);
+  renderer.clear();
   if (sbs) {
     // Stereo canvas but no usable views yet: the mono picture in both halves.
     monoCam.aspect = (w / 2) / h; monoCam.updateProjectionMatrix();
@@ -195,6 +270,7 @@ function sizeCanvas() {
   // write on a real change, then redraw at once.
   if (canvas.width === bw && canvas.height === h) return;
   renderer.setSize(bw, h, false);
+  if (!style) return;
   if (sbs && lastGood) drawStereo(lastGood); else drawMono();
 }
 new ResizeObserver(sizeCanvas).observe(canvas);
@@ -210,7 +286,7 @@ async function boot() {
     sizeCanvas();
     handle = wall.addScene(canvas, onXRFrame, {
       virtualDisplayHeight: VIRTUAL_DISPLAY_HEIGHT,
-      rectCover: 'auto',          // covers the canvas while Fill window resizes it
+      rectCover: 'auto',          // covers the canvas while full view resizes it
       onLayerLost: () => {        // fall back to flat rendering
         sbs = false; lastGood = null; sizeCanvas(); requestAnimationFrame(onMonoFrame);
         setStatus('3D layer lost: showing 2D', 'warn');
@@ -226,7 +302,7 @@ async function boot() {
   }
 }
 
-// ---- UI --------------------------------------------------------------------------------------
+// ---- UI: status, styles, sliders -------------------------------------------------------------
 function setStatus(text, kind) {
   statusEl.textContent = text;
   statusEl.dataset.kind = kind || '';
@@ -251,30 +327,42 @@ function syncStyleButtons() {
 const autoBox = $('auto');
 autoBox.checked = auto;
 autoBox.addEventListener('change', () => { auto = autoBox.checked; autoClock = 0; });
+$('sensitivity').addEventListener('input', (e) => { audio.gain = +e.target.value; });
+$('depth').addEventListener('input', (e) => { root.scale.z = +e.target.value; });
+$('glow').value = glow;
+$('glow').addEventListener('input', (e) => { glow = +e.target.value; applyBloom(); });
+const qualitySel = $('quality');
+qualitySel.value = quality;
+qualitySel.addEventListener('change', () => {
+  quality = qualitySel.value;
+  store.set('quality', quality);
+  composerSize = '';
+  if (!QUALITY[quality]) { composer?.dispose?.(); composer = null; }
+});
 
-const sens = $('sensitivity');
-sens.addEventListener('input', () => { audio.gain = +sens.value; });
-const depth = $('depth');
-depth.addEventListener('input', () => { root.scale.z = +depth.value; });
-
+// ---- UI: sources -----------------------------------------------------------------------------
 const sourceLabel = $('source-label');
 function sourceChanged() {
-  sourceLabel.textContent = audio.active ? audio.sourceLabel : 'No source. The visuals are idling.';
+  sourceLabel.textContent = audio.active ? 'Listening: ' + audio.sourceLabel : 'Not listening yet. The visuals are idling.';
   $('stop').disabled = !audio.active;
 }
 audio.onSourceEnded = sourceChanged;
 
+/** Run a source action from a click; report failures in the source line. Returns success. */
 async function run(fn) {
   try { await fn(); } catch (e) {
     if (e?.name !== 'NotAllowedError' && e?.name !== 'AbortError') console.error(e);
     sourceLabel.textContent = e?.name === 'NotAllowedError' ? 'Permission was declined.' : (e?.message || String(e));
-    return;
+    return false;
   }
   sourceChanged();
+  return true;
 }
+// Listen to this tab (the in-page players). Call first thing in a click handler.
+const listenTab = () => run(() => audio.captureThisTab());
 
 $('src-system').addEventListener('click', () => run(() => audio.captureSystem()));
-$('src-demo').addEventListener('click', () => run(() => audio.playDemo()));
+$('src-demo').addEventListener('click', () => run(() => audio.playDemo()).then(() => setTrack({ service: 'Demo', title: 'Demo loop', artist: 'Built-in lo-fi beat' })));
 $('stop').addEventListener('click', () => { audio.stop(); sourceChanged(); });
 
 const devSel = $('devices');
@@ -282,28 +370,153 @@ async function fillDevices() {
   const list = await audio.inputDevices();
   const cur = devSel.value;
   devSel.innerHTML = '<option value="">Default input</option>' +
-    list.map((d, i) => `<option value="${d.deviceId}">${escapeHtml(d.label || `Input ${i + 1}`)}</option>`).join('');
+    list.map((d, i) => `<option value="${escapeHtml(d.deviceId)}">${escapeHtml(d.label || `Input ${i + 1}`)}</option>`).join('');
   if ([...devSel.options].some((o) => o.value === cur)) devSel.value = cur;
 }
 $('src-input').addEventListener('click', () => run(async () => {
   await audio.captureInput(devSel.value);
   await fillDevices();   // labels are only available after permission
 }));
-devSel.addEventListener('change', () => { if (audio.stream && audio.sourceLabel !== 'System / tab audio') run(() => audio.captureInput(devSel.value)); });
+devSel.addEventListener('change', () => { if (audio.sourceKind === 'input') run(() => audio.captureInput(devSel.value)); });
 navigator.mediaDevices?.addEventListener?.('devicechange', fillDevices);
 fillDevices().catch(() => {});
 
+function playFile(f) {
+  run(() => audio.playFile(f)).then((ok) => ok && setTrack({ service: 'File', title: f.name.replace(/\.[^.]+$/, ''), artist: '' }));
+}
 const fileIn = $('file');
-fileIn.addEventListener('change', () => { if (fileIn.files[0]) run(() => audio.playFile(fileIn.files[0])); });
+fileIn.addEventListener('change', () => { if (fileIn.files[0]) playFile(fileIn.files[0]); });
 addEventListener('dragover', (e) => e.preventDefault());
 addEventListener('drop', (e) => {
   e.preventDefault();
   const f = [...(e.dataTransfer?.files || [])].find((x) => x.type.startsWith('audio/') || /\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(x.name));
-  if (f) run(() => audio.playFile(f));
+  if (f) playFile(f);
 });
 
-// Fill window: the stage takes the whole viewport. The canvas keeps its identity; the SDK's
-// rectCover hides it while the new rect is re-joined.
+// ---- UI: tabs ----------------------------------------------------------------------------------
+const tabs = [...document.querySelectorAll('[data-tab]')];
+function showTab(name) {
+  if (!tabs.some((t) => t.dataset.tab === name)) name = 'spotify';
+  for (const t of tabs) t.setAttribute('aria-selected', String(t.dataset.tab === name));
+  for (const p of document.querySelectorAll('[data-pane]')) p.hidden = p.dataset.pane !== name;
+  store.set('tab', name);
+}
+for (const t of tabs) t.addEventListener('click', () => showTab(t.dataset.tab));
+
+// ---- now playing + album colours -------------------------------------------------------------
+let activeService = null;
+let trackSeq = 0;
+function setTrack(t, service) {
+  if (service) activeService = service;
+  const seq = ++trackSeq;
+  $('np-title').textContent = t?.title || 'Nothing yet';
+  $('np-artist').textContent = t ? [t.artist, t.album].filter(Boolean).join(' · ') : 'Connect a service or pick a source.';
+  $('np-svc').textContent = t?.service || '';
+  const img = $('art');
+  img.hidden = !t?.art;
+  $('art-ph').hidden = !!t?.art;
+  if (t?.art) img.src = t.art;
+  if (!t?.art) { applyArtPalette(null); return; }
+  paletteFromImage(t.art)
+    .then((p) => { if (seq === trackSeq) applyArtPalette(p); })
+    .catch(() => { if (seq === trackSeq) applyArtPalette(null); });
+}
+function applyArtPalette(p) {
+  artPalette = p;
+  $('swatches').innerHTML = p ? p.map((c) => `<i style="background:rgb(${c.map((v) => Math.round(v * 255)).join(',')})"></i>`).join('') : '';
+  style?.setPalette?.(matchArt ? p : null);
+}
+$('match-art').addEventListener('change', (e) => { matchArt = e.target.checked; style?.setPalette?.(matchArt ? artPalette : null); });
+$('np-toggle').addEventListener('click', () => activeService?.toggle());
+$('np-next').addEventListener('click', () => activeService?.next());
+$('np-prev').addEventListener('click', () => activeService?.prev());
+
+// ---- Spotify ---------------------------------------------------------------------------------
+const spotify = new SpotifyService({
+  clientId: SPOTIFY_CLIENT_ID || store.get('spotifyClientId') || '',
+  onTrack: (t) => setTrack(t, t ? spotify : null),
+  onStatus: setStatus,
+  onState: () => renderSpotify(),
+});
+$('sp-redirect').textContent = spotify.redirectUri;
+function renderSpotify() {
+  $('sp-setup').hidden = !!spotify.clientId;
+  $('sp-out').hidden = !spotify.clientId || spotify.connected;
+  $('sp-in').hidden = !spotify.connected;
+  const u = spotify.user;
+  const note = $('sp-note');
+  if (!u) note.textContent = '';
+  else if (u.product !== 'premium') note.textContent = `Signed in as ${u.display_name || u.id}. Playing inside this page needs Premium. Play in the Spotify app on this PC and use "Listen to PC audio"; the now-playing card follows along either way.`;
+  else note.textContent = `Signed in as ${u.display_name || u.id}. ${spotify.deviceId ? 'This page is the Spotify Connect speaker "3D Music Visualizer": pick it in the Spotify app on your phone, or press Play here & listen.' : 'Starting the in-page Spotify player…'}${spotify.activeDevice ? ` Playing on: ${spotify.activeDevice}.` : ''}`;
+  $('sp-here').disabled = !spotify.deviceId;
+}
+$('sp-client-save').addEventListener('click', () => {
+  const id = $('sp-client').value.trim();
+  if (!/^[0-9a-f]{32}$/i.test(id)) { setStatus('That doesn\'t look like a Spotify Client ID (32 hex characters).', 'warn'); return; }
+  store.set('spotifyClientId', id);
+  spotify.clientId = id;
+  renderSpotify();
+});
+$('sp-connect').addEventListener('click', () => spotify.signIn().catch((e) => setStatus(e.message, 'warn')));
+$('sp-out-btn').addEventListener('click', () => { spotify.signOut(); renderSpotify(); });
+$('sp-here').addEventListener('click', async () => {
+  spotify.player?.activateElement?.();       // unlocks playback while the click still counts
+  await listenTab();
+  try { await spotify.playHere(); activeService = spotify; } catch (e) { setStatus(e.message, 'warn'); }
+});
+$('sp-listen-pc').addEventListener('click', () => { activeService = spotify; run(() => audio.captureSystem()); });
+$('sp-play').addEventListener('click', async () => {
+  spotify.player?.activateElement?.();
+  if (spotify.deviceId && audio.sourceKind !== 'tab' && audio.sourceKind !== 'system') await listenTab();
+  try { await spotify.playLink($('sp-link').value); activeService = spotify; } catch (e) { setStatus(e.message, 'warn'); }
+});
+
+// ---- Apple Music -------------------------------------------------------------------------------
+const apple = new AppleMusicService({
+  developerToken: APPLE_MUSIC_DEVELOPER_TOKEN || store.get('appleToken') || '',
+  onTrack: (t) => setTrack(t, t ? apple : null),
+  onStatus: setStatus,
+  onState: () => renderApple(),
+});
+function renderApple() {
+  $('am-setup').hidden = apple.configured;
+  $('am-ready').hidden = !apple.configured;
+  $('am-signin').textContent = apple.authorized ? 'Sign out of Apple Music' : 'Sign in to Apple Music';
+  $('am-auth-note').textContent = apple.authorized ? 'Signed in: full tracks.' : '';
+}
+$('am-token-save').addEventListener('click', () => {
+  const t = $('am-token').value.trim();
+  if (t.split('.').length !== 3) { setStatus('That doesn\'t look like a MusicKit developer token (a JWT).', 'warn'); return; }
+  store.set('appleToken', t);
+  apple.developerToken = t;
+  apple.init().then(renderApple);
+  renderApple();
+});
+$('am-capture').addEventListener('click', () => run(() => audio.captureSystem()));
+$('am-signin').addEventListener('click', () => (apple.authorized ? apple.signOut() : apple.signIn()).catch((e) => setStatus('Apple Music: ' + e.message, 'warn')));
+$('am-play').addEventListener('click', async () => {
+  await listenTab();
+  try { await apple.playLink($('am-link').value); activeService = apple; } catch (e) { setStatus('Apple Music: ' + e.message, 'warn'); }
+});
+
+// ---- YouTube ---------------------------------------------------------------------------------
+const youtube = new YouTubeService({
+  host: 'yt-player',
+  onTrack: (t) => setTrack(t, youtube),
+  onStatus: setStatus,
+  onState: () => {},
+});
+$('yt-play').addEventListener('click', async () => {
+  await listenTab();
+  try {
+    $('yt-wrap').hidden = false;
+    await youtube.load($('yt-link').value, true);
+    activeService = youtube;
+  } catch (e) { setStatus(e.message, 'warn'); }
+});
+$('yt-listen').addEventListener('click', () => { activeService = youtube; listenTab(); });
+
+// ---- full view, keys, meter ------------------------------------------------------------------
 function setFill(on) {
   document.body.classList.toggle('fill', on);
   $('fill').setAttribute('aria-pressed', String(on));
@@ -312,28 +525,38 @@ $('fill').addEventListener('click', () => setFill(!document.body.classList.conta
 $('exit-fill').addEventListener('click', () => setFill(false));
 
 addEventListener('keydown', (e) => {
-  if (e.target.closest?.('input, select, textarea')) return;
+  if (e.target.closest?.('input, select, textarea, button')) return;
   if (e.key >= '1' && e.key <= String(STYLES.length)) requestStyle(+e.key - 1);
   else if (e.key === 'ArrowRight') requestStyle(styleIndex + 1);
   else if (e.key === 'ArrowLeft') requestStyle(styleIndex - 1);
+  else if (e.key === ' ') { e.preventDefault(); activeService?.toggle(); }
   else if (e.key === 'a' || e.key === 'A') { autoBox.checked = auto = !auto; autoClock = 0; }
   else if (e.key === 'f' || e.key === 'F') setFill(!document.body.classList.contains('fill'));
   else if (e.key === 'Escape') setFill(false);
 });
 
-// Level meter (DOM, outside the canvas).
 const meter = $('meter');
+const bpmEl = $('bpm');
 let meterN = 0;
 function meterTick() {
   if ((meterN++ & 1) === 0) {
     meter.style.setProperty('--l', audio.level.toFixed(3));
     meter.classList.toggle('beat', audio.beat > 0.6);
   }
+  if ((meterN & 31) === 0) bpmEl.textContent = audio.active && audio.bpm ? `${Math.round(audio.bpm)} BPM` : '';
 }
 
-function escapeHtml(s) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]); }
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]); }
 
+// ---- start -------------------------------------------------------------------------------------
+showTab(params.has('code') ? 'spotify' : (params.get('tab') || store.get('tab') || 'spotify'));
 sourceChanged();
+renderSpotify();
+renderApple();
 boot();
+spotify.init().catch((e) => setStatus('Spotify: ' + e.message, 'warn'));
+apple.init();
 // ?demo starts the demo loop at once (headless checks; browsers allow it when autoplay is permitted).
-if (params.has("demo")) audio.playDemo().then(sourceChanged, () => {});
+if (params.has('demo')) audio.playDemo().then(() => { sourceChanged(); setTrack({ service: 'Demo', title: 'Demo loop', artist: 'Built-in lo-fi beat' }); }, () => {});
+// ?art=<image url> tints the styles from that image (for checking album-colour matching).
+if (params.get('art')) setTrack({ service: 'Test', title: 'Album colours', artist: '', art: params.get('art') });

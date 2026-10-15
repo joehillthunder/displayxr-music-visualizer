@@ -1,133 +1,250 @@
-// Liquid Orb: an iridescent sphere of liquid metal sitting in the glass, rippling with the bass
-// and shivering with the highs, inside a tilted ring of spectrum bars whose front half comes out
-// of the screen toward you.
+// Liquid Orb: an iridescent sphere of liquid chrome sitting in the glass, rippling with the bass
+// and shivering with the highs. It reflects a soft studio and shifts colour with viewing angle,
+// so each eye sees slightly different colours. Around it, a tilted ring of spectrum bars
+// carries the left channel on the left and the right channel on the right, with the bass at the
+// back framing the orb and the treble at the front, where the ring comes out of the screen. A
+// halo of light traces the live waveform, and each beat throws sparks off the surface toward you.
 
-import { NOISE_GLSL, resample, disposeTree } from './common.js';
+import { NOISE_GLSL, COLOR_GLSL, POINT_SIZE_GLSL, Palette, resample, rand, disposeTree } from './common.js';
 
-const BARS = 72;
+const BARS = 80;
 const RING_R = 0.05;
+const HALO = 256;
+const SPARKS = 700;
 
 export default class OrbStyle {
   static meta = {
     id: 'orb',
     name: 'Liquid Orb',
-    blurb: 'An iridescent liquid-metal sphere inside a ring of spectrum bars.',
+    blurb: 'Iridescent liquid chrome in a stereo ring of bars, throwing sparks on the beat.',
   };
+  static bloom = { strength: 0.4, radius: 0.3, threshold: 0.88 };
+  static palette = ['#7a5cff', '#22d3ee', '#a3ff7a', '#ff5fae', '#ffd36b'];
 
   constructor(THREE) {
     this.T = THREE;
     this.group = new THREE.Group();
-    this.half = new Float32Array(BARS / 2);
-    this.wobble = 0;
+    this.pal = new Palette(THREE, OrbStyle.palette);
+    this.L = new Float32Array(32);
+    this.R = new Float32Array(32);
+    this.hue = 0;
 
     this.orbMat = new THREE.ShaderMaterial({
       uniforms: {
-        uTime: { value: 0 }, uBass: { value: 0 }, uMid: { value: 0 }, uTreble: { value: 0 },
-        uBeat: { value: 0 }, uHue: { value: 0 },
+        uTime: { value: 0 }, uBass: { value: 0 }, uTreble: { value: 0 }, uBeat: { value: 0 },
+        uHue: { value: 0 }, uPal: this.pal.uniform,
       },
       vertexShader: NOISE_GLSL + /* glsl */`
-        uniform float uTime, uBass, uMid, uTreble, uBeat;
+        uniform float uTime, uBass, uTreble, uBeat;
         varying vec3 vWorld;
-        varying vec3 vNormalGuess;
-        void main() {
-          vec3 n = normalize(position);
+        varying vec3 vNormal;
+        float disp(vec3 n) {
           float big = snoise(n * 1.6 + vec3(0.0, uTime * 0.35, 0.0));
           float fine = snoise(n * 6.0 + vec3(uTime * 0.9));
-          float d = big * (0.0025 + uBass * 0.006 + uBeat * 0.003) + fine * (0.0004 + uTreble * 0.0018);
-          vec3 p = position + n * d;
-          vec4 w = modelMatrix * vec4(p, 1.0);
+          return big * (0.0025 + uBass * 0.006 + uBeat * 0.003) + fine * (0.0004 + uTreble * 0.0018);
+        }
+        vec3 surf(vec3 n, float r) { return n * (r + disp(n)); }
+        void main() {
+          float r = length(position);
+          vec3 n = position / r;
+          // Smooth normal from the displaced surface at two nearby points.
+          vec3 t1 = normalize(cross(n, abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+          vec3 t2 = cross(n, t1);
+          vec3 p0 = surf(n, r);
+          vec3 p1 = surf(normalize(n + t1 * 0.02), r);
+          vec3 p2 = surf(normalize(n + t2 * 0.02), r);
+          vec3 nn = normalize(cross(p1 - p0, p2 - p0));
+          if (dot(nn, n) < 0.0) nn = -nn;
+          vec4 w = modelMatrix * vec4(p0, 1.0);
           vWorld = w.xyz;
-          vNormalGuess = normalize(mat3(modelMatrix) * n);
+          vNormal = normalize(mat3(modelMatrix) * nn);
           gl_Position = projectionMatrix * viewMatrix * w;
         }`,
-      fragmentShader: /* glsl */`
+      fragmentShader: COLOR_GLSL + /* glsl */`
         uniform float uHue, uBass;
         varying vec3 vWorld;
-        varying vec3 vNormalGuess;
-        vec3 hsv(float h, float s, float v) {
-          vec3 k = clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
-          return v * mix(vec3(1.0), k, s);
+        varying vec3 vNormal;
+        // A soft studio: a dim gradient dome with two long light boxes and a warm floor bounce.
+        vec3 env(vec3 d) {
+          vec3 c = mix(uPal[0] * 0.05, vec3(0.32, 0.35, 0.45), smoothstep(-0.3, 1.0, d.y));
+          c += vec3(1.3) * smoothstep(0.86, 0.95, d.y) * smoothstep(0.6, 0.2, abs(d.x));
+          c += uPal[1] * 0.9 * smoothstep(0.75, 0.9, -d.x) * smoothstep(0.5, 0.1, abs(d.y));
+          c += uPal[3] * 0.5 * smoothstep(-0.4, -0.9, d.y);
+          return c;
         }
         void main() {
-          // Displaced normal from screen-space derivatives, blended with the smooth one.
-          vec3 dn = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
-          if (dot(dn, vNormalGuess) < 0.0) dn = -dn;
-          vec3 N = normalize(mix(vNormalGuess, dn, 0.4));
+          vec3 N = normalize(vNormal);
           vec3 V = normalize(cameraPosition - vWorld);
+          vec3 R = reflect(-V, N);
           float ndv = clamp(dot(N, V), 0.0, 1.0);
-          float fres = pow(1.0 - ndv, 3.0);
-          // Thin-film iridescence: hue shifts with viewing angle (and so between your two eyes).
-          vec3 film = hsv(uHue + ndv * 0.6, 0.65, 1.0);
-          vec3 L = normalize(vec3(-0.4, 0.7, 0.6));
-          vec3 H = normalize(L + V);
-          float spec = pow(max(dot(N, H), 0.0), 90.0);
-          vec3 env = mix(vec3(0.03, 0.02, 0.08), vec3(0.35, 0.4, 0.6), N.y * 0.5 + 0.5);
-          vec3 col = env * 0.6 + film * (0.18 + fres * 0.9) + vec3(spec) * 1.4;
-          col += film * uBass * 0.12;
-          gl_FragColor = vec4(col, 1.0);
+          float fres = 0.08 + 0.92 * pow(1.0 - ndv, 4.0);
+          // Thin-film iridescence: the tint slides through the palette with viewing angle.
+          vec3 film = palette(uHue + ndv * 0.55);
+          vec3 col = env(R) * mix(film * 0.9, vec3(1.0), fres) + film * 0.06;
+          vec3 H = normalize(normalize(vec3(-0.4, 0.8, 0.5)) + V);
+          col += vec3(1.8) * pow(max(dot(N, H), 0.0), 220.0);
+          col += film * uBass * 0.15;
+          gl_FragColor = vec4(toLinear(col), 1.0);
+          #include <colorspace_fragment>
         }`,
     });
-    this.orb = new THREE.Mesh(new THREE.IcosahedronGeometry(0.03, 40), this.orbMat);
+    this.orb = new THREE.Mesh(new THREE.IcosahedronGeometry(0.03, 56), this.orbMat);
     this.orb.position.z = -0.008;
     this.group.add(this.orb);
 
-    // Ring of bars, mirrored so the spectrum reads symmetrically left and right.
+    // Ring of bars.
     this.ring = new THREE.Group();
-    this.ring.position.z = -0.008;
+    this.ring.position.set(0, -0.02, -0.008);
     this.ring.rotation.x = 0.38;   // tilt the top back, so the front of the ring comes out at you
     this.group.add(this.ring);
-    const bar = new THREE.BoxGeometry(0.0026, 1, 0.0026);
+    const bar = new THREE.BoxGeometry(0.0022, 1, 0.0022);
     bar.translate(0, 0.5, 0);
-    this.barMat = new THREE.MeshBasicMaterial({ color: '#ffffff' });
-    this.bars = new THREE.InstancedMesh(bar, this.barMat, BARS);
+    this.bars = new THREE.InstancedMesh(bar, new THREE.MeshBasicMaterial({ color: '#ffffff' }), BARS);
     this.ring.add(this.bars);
     this.m = new THREE.Matrix4();
     this.q = new THREE.Quaternion();
     this.c = new THREE.Color();
-
-    // Reflection-ish floor disc beneath the ring.
-    const disc = new THREE.Mesh(
-      new THREE.RingGeometry(RING_R - 0.006, RING_R + 0.004, 96),
-      new THREE.MeshBasicMaterial({ color: '#2a1f55', side: THREE.DoubleSide }),
+    this.up = new THREE.Vector3(0, 1, 0);
+    this.v = new THREE.Vector3();
+    this.s = new THREE.Vector3();
+    this.disc = new THREE.Mesh(
+      new THREE.RingGeometry(RING_R - 0.006, RING_R + 0.004, 128),
+      new THREE.MeshBasicMaterial({ color: '#1d1640', side: THREE.DoubleSide }),
     );
-    disc.rotation.x = -Math.PI / 2;
-    disc.position.y = -0.0005;
-    this.ring.add(disc);
-    this.ring.position.y = -0.02;
+    this.disc.rotation.x = -Math.PI / 2;
+    this.disc.position.y = -0.0005;
+    this.ring.add(this.disc);
+
+    // Waveform halo: beads of light around the orb, facing you.
+    const hg = new THREE.BufferGeometry();
+    hg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(HALO * 3), 3));
+    this.haloMat = new THREE.ShaderMaterial({
+      uniforms: { uViewportH: { value: 1000 }, uLevel: { value: 0 }, uPal: this.pal.uniform },
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      vertexShader: POINT_SIZE_GLSL + /* glsl */`
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * mv;
+          gl_PointSize = max(1.5, pointPx(0.0013, mv));
+        }`,
+      fragmentShader: COLOR_GLSL + /* glsl */`
+        uniform float uLevel;
+        void main() {
+          float d = length(gl_PointCoord - 0.5);
+          gl_FragColor = vec4(toLinear(uPal[1] * (0.85 + uLevel * 0.9)) * smoothstep(0.5, 0.1, d), 1.0);
+          #include <colorspace_fragment>
+        }`,
+    });
+    this.halo = new THREE.Points(hg, this.haloMat);
+    this.halo.position.z = -0.008;
+    this.halo.frustumCulled = false;
+    this.group.add(this.halo);
+
+    // Beat sparks.
+    this.sp = new Float32Array(SPARKS * 3);
+    this.sv = new Float32Array(SPARKS * 3);
+    this.life = new Float32Array(SPARKS);
+    this.next = 0;
+    const sg = new THREE.BufferGeometry();
+    sg.setAttribute('position', new THREE.BufferAttribute(this.sp, 3));
+    sg.setAttribute('life', new THREE.BufferAttribute(this.life, 1));
+    this.sparkMat = new THREE.ShaderMaterial({
+      uniforms: { uViewportH: { value: 1000 }, uPal: this.pal.uniform },
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      vertexShader: POINT_SIZE_GLSL + /* glsl */`
+        attribute float life;
+        varying float vLife;
+        void main() {
+          vLife = life;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * mv;
+          gl_PointSize = life > 0.0 ? max(1.0, pointPx(0.0012 * (0.4 + life), mv)) : 0.0;
+        }`,
+      fragmentShader: COLOR_GLSL + /* glsl */`
+        varying float vLife;
+        void main() {
+          if (vLife <= 0.0) discard;
+          float d = length(gl_PointCoord - 0.5);
+          gl_FragColor = vec4(toLinear(mix(uPal[3], uPal[4], vLife) * 1.4 * vLife) * smoothstep(0.5, 0.0, d), 1.0);
+          #include <colorspace_fragment>
+        }`,
+    });
+    this.sparks = new THREE.Points(sg, this.sparkMat);
+    this.sparks.frustumCulled = false;
+    this.group.add(this.sparks);
   }
+
+  setPalette(rgbs) { this.pal.set(rgbs); }
 
   update(a, dt) {
     const T = this.T;
-    resample(a.bands, BARS / 2, this.half);
+    this.pal.update(dt);
+    resample(a.bandsL, 32, this.L);
+    resample(a.bandsR, 32, this.R);
     const u = this.orbMat.uniforms;
     u.uTime.value = a.time;
     u.uBass.value = a.bass;
-    u.uMid.value = a.mid;
     u.uTreble.value = a.treble;
     u.uBeat.value = a.beat;
-    u.uHue.value = (a.time * 0.03 + a.centroid * 0.5) % 1;
-    this.orb.scale.setScalar(1 + a.beat * 0.06 + a.bass * 0.05);
+    this.hue = (this.hue + dt * 0.02 + a.beat * 0.01) % 1;
+    u.uHue.value = this.hue + a.centroid * 0.3;
+    this.orb.scale.setScalar(1 + a.beat * 0.05 + a.bass * 0.05);
     this.orb.rotation.y += dt * (0.2 + a.mid * 0.8);
 
-    this.ring.rotation.y += dt * (0.08 + a.level * 0.35);
-    const up = new T.Vector3(0, 1, 0);
+    this.ring.rotation.y = Math.sin(a.time * 0.12) * 0.25;
     for (let i = 0; i < BARS; i++) {
       const ang = (i / BARS) * Math.PI * 2;
-      const k = i < BARS / 2 ? i : BARS - 1 - i;
-      const v = this.half[k];
-      const h = 0.003 + v * 0.05;
-      this.q.setFromAxisAngle(up, -ang);
-      this.m.compose(
-        new T.Vector3(Math.cos(ang) * RING_R, 0, Math.sin(ang) * RING_R),
-        this.q,
-        new T.Vector3(1, h, 1),
-      );
+      const x = Math.cos(ang) * RING_R, z = Math.sin(ang) * RING_R;
+      // Bass at the back, framing the orb; treble at the front, where the ring comes out at you.
+      // Left channel on the left, right channel on the right.
+      const f = 1 - Math.abs(Math.atan2(x, z)) / Math.PI;
+      const k = Math.min(31, Math.floor(f * 32));
+      const v = x < 0 ? this.L[k] : this.R[k];
+      this.q.setFromAxisAngle(this.up, -ang);
+      this.m.compose(this.v.set(x, 0, z), this.q, this.s.set(1, 0.003 + Math.min(1, v * 1.3) * (0.03 + 0.03 * f), 1));
       this.bars.setMatrixAt(i, this.m);
-      this.c.setHSL((u.uHue.value + k / BARS * 0.8) % 1, 0.85, 0.45 + v * 0.35);
-      this.bars.setColorAt(i, this.c);
+      this.pal.color(Math.floor(f * 4.99), this.c).lerp(this.pal.color((Math.floor(f * 4.99) + 1) % 5, new T.Color()), (f * 4.99) % 1);
+      this.bars.setColorAt(i, this.c.multiplyScalar(0.45 + v * 1.1));
     }
     this.bars.instanceMatrix.needsUpdate = true;
     this.bars.instanceColor.needsUpdate = true;
+
+    const hp = this.halo.geometry.attributes.position.array;
+    for (let i = 0; i < HALO; i++) {
+      const ang = i / HALO * Math.PI * 2;
+      const r = 0.041 + a.wave[Math.floor(i / HALO * a.wave.length)] * 0.007;
+      hp[i * 3] = Math.cos(ang) * r; hp[i * 3 + 1] = Math.sin(ang) * r; hp[i * 3 + 2] = 0;
+    }
+    this.halo.geometry.attributes.position.needsUpdate = true;
+    this.haloMat.uniforms.uLevel.value = a.level;
+
+    // Sparks: burst on a beat, fly out (biased toward you), slow down and fade.
+    if (a.beat > 0.95) {
+      const n = 40 + Math.floor(a.bass * 80);
+      for (let j = 0; j < n; j++) {
+        const i = this.next = (this.next + 1) % SPARKS;
+        const th = Math.random() * Math.PI * 2, ph = Math.acos(rand(-0.2, 1));
+        const dx = Math.sin(ph) * Math.cos(th), dy = Math.sin(ph) * Math.sin(th), dz = Math.cos(ph);
+        this.sp.set([dx * 0.032, dy * 0.032, -0.008 + dz * 0.032], i * 3);
+        const sp = rand(0.03, 0.08) * (0.6 + a.bass);
+        this.sv.set([dx * sp, dy * sp, dz * sp], i * 3);
+        this.life[i] = 1;
+      }
+    }
+    const drag = Math.exp(-dt * 2.2);
+    for (let i = 0; i < SPARKS; i++) {
+      if (this.life[i] <= 0) continue;
+      this.life[i] -= dt / 1.3;
+      for (let k = 0; k < 3; k++) { this.sp[i * 3 + k] += this.sv[i * 3 + k] * dt; this.sv[i * 3 + k] *= drag; }
+      this.sp[i * 3 + 2] = Math.min(this.sp[i * 3 + 2], 0.045);   // keep them within comfortable pop-out
+    }
+    this.sparks.geometry.attributes.position.needsUpdate = true;
+    this.sparks.geometry.attributes.life.needsUpdate = true;
+  }
+
+  beforeRender(vpH) {
+    this.haloMat.uniforms.uViewportH.value = vpH;
+    this.sparkMat.uniforms.uViewportH.value = vpH;
   }
 
   dispose() { disposeTree(this.group); }

@@ -3,8 +3,11 @@
 // Every style is a class with the same shape:
 //
 //   static meta = { id, name, blurb }
+//   static bloom = { strength, radius, threshold }   glow settings for the bloom pass
+//   static palette = [5 x '#rrggbb']                 the style's own colours
 //   constructor(THREE)      builds this.group (added to the scene by main.js)
 //   update(audio, dt)       advance one frame from the AudioEngine's features
+//   setPalette(rgb[5]|null) blend toward album-art colours (sRGB 0..1 triples), or back to its own
 //   beforeRender(vpHeight)  optional: called before each eye with that eye's viewport height in
 //                           buffer pixels (point sprites need it to size themselves in metres)
 //   dispose()
@@ -12,9 +15,34 @@
 // Units are metres on a virtual display 0.12 m tall (main.js passes virtualDisplayHeight 0.12).
 // z = 0 is the glass: +z comes out toward the viewer, -z goes behind it. At 16:9 the visible
 // window at z = 0 is about 0.213 m x 0.12 m.
+//
+// Colour: shaders author colours in sRGB (as picked), convert with toLinear() and end with
+// #include <colorspace_fragment>, so they look the same whether drawn through the bloom
+// composer (linear HDR target) or straight to the canvas. Values above 1 glow under bloom.
 
 export const FRAME_W = 0.213;
 export const FRAME_H = 0.12;
+
+export const COLOR_GLSL = /* glsl */`
+  vec3 toLinear(vec3 c) { return pow(max(c, vec3(0.0)), vec3(2.2)); }
+  vec3 hsv(float h, float s, float v) {
+    vec3 k = clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+    return v * mix(vec3(1.0), k, s);
+  }
+  uniform vec3 uPal[5];
+  // Sample the 5-colour palette as a smooth loop, t in 0..1.
+  vec3 palette(float t) {
+    t = fract(t) * 5.0;
+    int i = int(floor(t));
+    float f = smoothstep(0.0, 1.0, fract(t));
+    vec3 a = uPal[0], b = uPal[1];
+    if (i == 1) { a = uPal[1]; b = uPal[2]; }
+    else if (i == 2) { a = uPal[2]; b = uPal[3]; }
+    else if (i == 3) { a = uPal[3]; b = uPal[4]; }
+    else if (i == 4) { a = uPal[4]; b = uPal[0]; }
+    return mix(a, b, f);
+  }
+`;
 
 // Vertex-shader size for point sprites given in METRES, so they stay the right size in each
 // eye's off-axis projection. projectionMatrix[1][1] is the vertical focal scale.
@@ -52,17 +80,53 @@ export const NOISE_GLSL = /* glsl */`
   }
 `;
 
-/** Average of bands[from..to) — styles use it to resample the 64-band spectrum. */
+export const QUAD_VERT = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }';
+
+export function hexRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
+}
+
+/**
+ * The live 5-colour palette of a style: starts at the style's own colours and eases toward
+ * whatever setPalette() asks for, so album changes fade in rather than snap.
+ * `uniform` is a ready-made { value: Vector3[5] } for ShaderMaterials (sRGB components).
+ */
+export class Palette {
+  constructor(THREE, hexes) {
+    this.base = hexes.map(hexRgb);
+    this.cur = this.base.map((c) => c.slice());
+    this.target = this.base;
+    this.uniform = { value: this.cur.map((c) => new THREE.Vector3(...c)) };
+    this._c = new THREE.Color();
+    this.T = THREE;
+  }
+  set(rgbs) { this.target = rgbs && rgbs.length >= 5 ? rgbs : this.base; }
+  update(dt) {
+    const k = 1 - Math.exp(-dt * 2.5);
+    for (let i = 0; i < 5; i++) {
+      for (let j = 0; j < 3; j++) this.cur[i][j] += (this.target[i][j] - this.cur[i][j]) * k;
+      this.uniform.value[i].set(...this.cur[i]);
+    }
+  }
+  /** Palette entry i as a THREE.Color (converted from sRGB for built-in materials). */
+  color(i, out = this._c) { const c = this.cur[i % 5]; return out.setRGB(c[0], c[1], c[2], this.T.SRGBColorSpace); }
+}
+
+/** Average of bands[from..to). */
 export function bandAvg(bands, from, to) {
   let s = 0;
   for (let i = from; i < to; i++) s += bands[i];
   return s / Math.max(1, to - from);
 }
 
-/** Resample the spectrum to `n` values into `out`. */
+/** Resample a spectrum to `n` values into `out`. */
 export function resample(bands, n, out) {
   const step = bands.length / n;
-  for (let i = 0; i < n; i++) out[i] = bandAvg(bands, Math.floor(i * step), Math.floor((i + 1) * step));
+  for (let i = 0; i < n; i++) {
+    const a = i * step, b = (i + 1) * step;
+    out[i] = b - a >= 1 ? bandAvg(bands, Math.floor(a), Math.ceil(b)) : bands[Math.min(bands.length - 1, Math.floor(a))];
+  }
   return out;
 }
 

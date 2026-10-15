@@ -1,63 +1,71 @@
 // Neon Horizon: an 80s synthwave road trip. A neon-gridded landscape rolls toward you out of the
-// screen, its mountains shaped by the spectrum history, under a striped sun that pulses with the
-// bass and a sky of stars that twinkle on the highs.
+// screen. The mountains on the left are shaped by the left channel's spectrum history and those
+// on the right by the right channel's. A striped sun pulses with the bass, stars twinkle on the
+// highs, and the live waveform hangs over the road as a laser line.
 
-import { FRAME_W, POINT_SIZE_GLSL, resample, rand, disposeTree } from './common.js';
+import { FRAME_W, POINT_SIZE_GLSL, COLOR_GLSL, QUAD_VERT, Palette, resample, rand, disposeTree } from './common.js';
 
-const SX = 48;            // grid segments across
-const SZ = 36;            // grid segments deep (= spectrum history rows)
+const SX = 72;            // grid segments across
+const SZ = 56;            // grid segments deep (= spectrum history rows)
 const DEPTH = 0.17;       // z from +0.045 back to -0.125
 const WIDTH = FRAME_W * 1.7;
-const ROW_DT = 1 / 18;
+const ROW_DT = 1 / 22;
+const LASER = 192;
 
 export default class SynthwaveStyle {
   static meta = {
     id: 'synthwave',
     name: 'Neon Horizon',
-    blurb: 'Synthwave grid terrain rolling out of the screen under a pulsing sun.',
+    blurb: 'Stereo synthwave mountains roll out of the screen under a pulsing sun and a waveform laser.',
   };
+  static bloom = { strength: 0.5, radius: 0.3, threshold: 0.78 };
+  // Grid pink, grid cyan, sun top, sun bottom, sky.
+  static palette = ['#ff2ebf', '#19e6ff', '#ffe14d', '#ff2a8c', '#6a0f6b'];
 
   constructor(THREE) {
     this.group = new THREE.Group();
-    this.hist = Array.from({ length: SZ + 1 }, () => new Float32Array(SX / 2 + 1));
-    this.cur = new Float32Array(SX / 2 + 1);
+    this.pal = new Palette(THREE, SynthwaveStyle.palette);
+    const half = SX / 2;
+    this.hist = Array.from({ length: SZ + 1 }, () => new Float32Array(2 * (half + 1)));
+    this.curL = new Float32Array(half + 1);
+    this.curR = new Float32Array(half + 1);
     this.acc = 0;
     this.rows = 0;
 
-    // Terrain: a plane lying flat at y = -0.035, front edge at z = +0.03.
+    // Terrain: a plane lying flat at y = -0.04, front edge at z = +0.045.
     const geo = new THREE.PlaneGeometry(WIDTH, DEPTH, SX, SZ);
     geo.rotateX(-Math.PI / 2);
     geo.translate(0, -0.04, 0.045 - DEPTH / 2);
     this.base = geo.attributes.position.array.slice();
     this.terrainMat = new THREE.ShaderMaterial({
-      uniforms: { uScroll: { value: 0 }, uFlash: { value: 0 }, uHue: { value: 0 } },
+      uniforms: { uScroll: { value: 0 }, uFlash: { value: 0 }, uPal: this.pal.uniform },
       vertexShader: /* glsl */`
         varying vec2 vUv; varying float vH; varying float vZ;
         void main() {
           vUv = uv; vH = position.y + 0.04; vZ = position.z;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }`,
-      fragmentShader: /* glsl */`
-        uniform float uScroll, uFlash, uHue;
+      fragmentShader: COLOR_GLSL + /* glsl */`
+        uniform float uScroll, uFlash;
         varying vec2 vUv; varying float vH; varying float vZ;
         float gridLine(float v, float n) {
           float f = abs(fract(v * n) - 0.5);
           float w = fwidth(v * n);
-          return 1.0 - smoothstep(0.0, w * 1.5, 0.5 - f);
+          return 1.0 - smoothstep(0.0, w * 1.4, 0.5 - f);
         }
         void main() {
           float gx = gridLine(vUv.x, ${SX / 2}.0);
           // A cross line every second history row, riding with the rows as they roll forward.
           float gz = gridLine(uScroll - ${SZ}.0 * (1.0 - vUv.y), 0.5);
           float g = max(gx, gz);
-          vec3 pink = vec3(1.0, 0.18, 0.75), cyan = vec3(0.1, 0.9, 1.0);
-          vec3 line = mix(pink, cyan, clamp(vH * 25.0 + uHue, 0.0, 1.0));
-          vec3 fill = vec3(0.06, 0.01, 0.12) + vec3(0.12, 0.0, 0.18) * vH * 20.0;
-          vec3 col = mix(fill, line * (1.2 + uFlash), g);
+          vec3 line = mix(uPal[0], uPal[1], clamp(vH * 22.0, 0.0, 1.0)) * (1.35 + uFlash * 0.8);
+          vec3 fill = uPal[4] * 0.08 + uPal[4] * 0.35 * clamp(vH * 18.0, 0.0, 1.0);
+          vec3 col = mix(fill, line, g);
           // Fade into the horizon haze.
-          float far = smoothstep(-0.06, -0.12, vZ);
-          col = mix(col, vec3(0.35, 0.05, 0.4), far * 0.85);
-          gl_FragColor = vec4(col, 1.0);
+          float far = smoothstep(-0.06, -0.125, vZ);
+          col = mix(col, uPal[4] * 0.6 + uPal[3] * 0.2, far * 0.85);
+          gl_FragColor = vec4(toLinear(col), 1.0);
+          #include <colorspace_fragment>
         }`,
     });
     this.terrain = new THREE.Mesh(geo, this.terrainMat);
@@ -65,27 +73,27 @@ export default class SynthwaveStyle {
 
     // Striped sun.
     this.sunMat = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uBass: { value: 0 } },
-      transparent: true,
-      depthWrite: false,
-      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-      fragmentShader: /* glsl */`
+      uniforms: { uTime: { value: 0 }, uBass: { value: 0 }, uPal: this.pal.uniform },
+      transparent: true, depthWrite: false,
+      vertexShader: QUAD_VERT,
+      fragmentShader: COLOR_GLSL + /* glsl */`
         uniform float uTime, uBass;
         varying vec2 vUv;
         void main() {
           vec2 p = vUv - 0.5;
           float r = length(p);
-          vec3 col = mix(vec3(1.0, 0.15, 0.55), vec3(1.0, 0.85, 0.25), smoothstep(-0.3, 0.35, p.y));
+          vec3 col = mix(uPal[3], uPal[2], smoothstep(-0.26, 0.3, p.y)) * (1.0 + uBass * 0.25);
           float disc = smoothstep(0.265, 0.26, r);
           // Horizontal gaps in the lower half, scrolling down.
           float stripes = step(0.0, p.y) + step(0.5, fract(p.y * 14.0 - uTime * 0.6)) * step(p.y, 0.0) * smoothstep(-0.32, 0.0, p.y) + step(p.y, -0.265);
-          float glow = exp(-max(0.0, r - 0.25) * 16.0) * (0.35 + uBass * 0.6);
-          float a = max(disc * min(1.0, stripes), glow * (1.0 - disc) * smoothstep(0.5, 0.36, r));
-          gl_FragColor = vec4(col * (1.0 + uBass * 0.4), a);
+          float glow = exp(-max(0.0, r - 0.25) * 16.0) * (0.22 + uBass * 0.3) * smoothstep(0.5, 0.36, r);
+          float a = max(disc * min(1.0, stripes), glow * (1.0 - disc));
+          gl_FragColor = vec4(toLinear(col), a);
+          #include <colorspace_fragment>
         }`,
     });
     this.sun = new THREE.Mesh(new THREE.PlaneGeometry(0.17, 0.17), this.sunMat);
-    this.sun.position.set(0, 0.006, -0.125);
+    this.sun.position.set(0, 0.004, -0.125);
     this.sun.renderOrder = -1;
     this.group.add(this.sun);
 
@@ -93,8 +101,15 @@ export default class SynthwaveStyle {
     const sky = new THREE.Mesh(
       new THREE.PlaneGeometry(0.6, 0.3),
       new THREE.ShaderMaterial({
-        vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-        fragmentShader: 'varying vec2 vUv; void main(){ gl_FragColor = vec4(mix(vec3(0.45,0.06,0.42), vec3(0.03,0.01,0.1), smoothstep(0.35,0.85,vUv.y)), 1.0); }',
+        uniforms: { uPal: this.pal.uniform },
+        vertexShader: QUAD_VERT,
+        fragmentShader: COLOR_GLSL + /* glsl */`
+          varying vec2 vUv;
+          void main() {
+            vec3 c = mix(uPal[4] * 0.9 + uPal[3] * 0.15, vec3(0.02, 0.01, 0.06), smoothstep(0.35, 0.85, vUv.y));
+            gl_FragColor = vec4(toLinear(c), 1.0);
+            #include <colorspace_fragment>
+          }`,
         depthWrite: false,
       }),
     );
@@ -103,10 +118,10 @@ export default class SynthwaveStyle {
     this.group.add(sky);
 
     // Stars.
-    const NS = 400;
+    const NS = 700;
     const sp = new Float32Array(NS * 3), ph = new Float32Array(NS);
     for (let i = 0; i < NS; i++) {
-      sp.set([rand(-0.2, 0.2), rand(0.0, 0.1), rand(-0.128, -0.11)], i * 3);
+      sp.set([rand(-0.2, 0.2), rand(-0.005, 0.1), rand(-0.128, -0.11)], i * 3);
       ph[i] = Math.random() * 6.283;
     }
     const sg = new THREE.BufferGeometry();
@@ -120,56 +135,100 @@ export default class SynthwaveStyle {
         void main() {
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
           gl_Position = projectionMatrix * mv;
-          vA = 0.35 + 0.65 * (0.5 + 0.5 * sin(uTime * 3.0 + phase * 7.0)) * (0.4 + uTreble * 1.5);
-          gl_PointSize = max(1.5, pointPx(0.0012, mv));
+          vA = 0.3 + 0.7 * (0.5 + 0.5 * sin(uTime * 3.0 + phase * 7.0)) * (0.4 + uTreble * 1.8);
+          gl_PointSize = max(1.5, pointPx(0.001, mv));
         }`,
-      fragmentShader: 'varying float vA; void main(){ float d = length(gl_PointCoord-0.5); gl_FragColor = vec4(vec3(1.0,0.9,1.0)*vA*smoothstep(0.5,0.0,d), 1.0); }',
+      fragmentShader: COLOR_GLSL + /* glsl */`
+        varying float vA;
+        void main() {
+          float d = length(gl_PointCoord - 0.5);
+          gl_FragColor = vec4(toLinear(vec3(1.0, 0.9, 1.0) * vA * smoothstep(0.5, 0.0, d)), 1.0);
+          #include <colorspace_fragment>
+        }`,
     });
     this.stars = new THREE.Points(sg, this.starMat);
     this.stars.renderOrder = -1;
     this.group.add(this.stars);
+
+    // Waveform laser: a thin ribbon over the road, between the glass and the sun.
+    const lp = new Float32Array(LASER * 2 * 3);
+    const idx = [];
+    for (let i = 0; i < LASER - 1; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    const lg = new THREE.BufferGeometry();
+    lg.setAttribute('position', new THREE.BufferAttribute(lp, 3));
+    lg.setIndex(idx);
+    this.laserMat = new THREE.ShaderMaterial({
+      uniforms: { uPal: this.pal.uniform, uLevel: { value: 0 } },
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      vertexShader: 'varying float vX; void main(){ vX = position.x; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+      fragmentShader: COLOR_GLSL + /* glsl */`
+        uniform float uLevel;
+        varying float vX;
+        void main() {
+          float fade = smoothstep(0.1, 0.06, abs(vX));
+          gl_FragColor = vec4(toLinear(uPal[1] * (1.1 + uLevel * 1.2) * fade), 1.0);
+          #include <colorspace_fragment>
+        }`,
+    });
+    this.laser = new THREE.Mesh(lg, this.laserMat);
+    this.laser.frustumCulled = false;
+    this.group.add(this.laser);
   }
 
+  setPalette(rgbs) { this.pal.set(rgbs); }
+
   update(a, dt) {
-    // Fold the spectrum into half a row (mirrored about the road), bass at the outer edges.
+    this.pal.update(dt);
     const half = SX / 2;
-    resample(a.bands, half + 1, this.cur);
+    resample(a.bandsL, half + 1, this.curL);
+    resample(a.bandsR, half + 1, this.curR);
 
     const speed = 1 + a.level * 2.5;
     this.acc += dt * speed;
     while (this.acc >= ROW_DT) {
       this.acc -= ROW_DT;
       this.hist.unshift(this.hist.pop());
+      this.hist[0].set(this.curL, 0);
+      this.hist[0].set(this.curR, half + 1);
       this.rows = (this.rows + 1) % 2;
-      this.hist[0].set(this.cur);
     }
     const frac = this.acc / ROW_DT;
 
     const p = this.terrain.geometry.attributes.position;
     const arr = p.array, base = this.base;
     for (let iz = 0; iz <= SZ; iz++) {
-      // Row 0 of the plane is the far edge; the newest history row is drawn at the far edge and
+      // Row 0 of the plane is the far edge: the newest history is born at the horizon and
       // rolls toward you.
       const row = this.hist[iz];
       for (let ix = 0; ix <= SX; ix++) {
         const k = (iz * (SX + 1) + ix) * 3;
-        const side = Math.abs(ix - half) / half;            // 0 at the road, 1 at the edge
-        const band = row[Math.round((1 - side) * half)] || 0;
+        const side = Math.abs(ix - half) / half;           // 0 at the road, 1 at the edge
+        const bi = Math.round((1 - side) * half);           // bass at the outer edges
+        const band = ix < half ? row[bi] : row[half + 1 + bi];
         const valley = Math.max(0, side - 0.12) / 0.88;     // a flat road down the middle
-        arr[k + 1] = base[k + 1] + band * 0.05 * valley ** 1.4;
+        arr[k + 1] = base[k + 1] + (band || 0) * 0.055 * valley ** 1.4;
         arr[k + 2] = base[k + 2] + frac * (DEPTH / SZ);
       }
     }
     p.needsUpdate = true;
     this.terrainMat.uniforms.uScroll.value = this.rows % 2;
-    this.terrainMat.uniforms.uFlash.value = a.beat * 0.8;
-    this.terrainMat.uniforms.uHue.value = a.centroid - 0.4;
+    this.terrainMat.uniforms.uFlash.value = a.beat;
 
     this.sunMat.uniforms.uTime.value = a.time;
     this.sunMat.uniforms.uBass.value = a.bass;
     this.sun.scale.setScalar(1 + a.bass * 0.12 + a.beat * 0.04);
     this.starMat.uniforms.uTime.value = a.time;
     this.starMat.uniforms.uTreble.value = a.treble;
+
+    const lp = this.laser.geometry.attributes.position.array;
+    const w = 0.0007 + a.level * 0.0006;
+    for (let i = 0; i < LASER; i++) {
+      const x = -0.1 + 0.2 * i / (LASER - 1);
+      const y = -0.014 + a.wave[Math.floor(i / LASER * a.wave.length)] * 0.014;
+      lp.set([x, y - w, -0.045, x, y + w, -0.045], i * 6);
+    }
+    this.laser.geometry.attributes.position.needsUpdate = true;
+    this.laserMat.uniforms.uLevel.value = a.level;
   }
 
   beforeRender(vpH) { this.starMat.uniforms.uViewportH.value = vpH; }
